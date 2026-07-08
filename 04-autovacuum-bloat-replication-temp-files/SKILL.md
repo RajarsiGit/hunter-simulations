@@ -21,23 +21,23 @@ show up together on an incident: autovacuum & bloat, replication, and temp files
 ## Non-interactive / agent mode
 
 Every mutating script calls the shared `confirm_drill` helper (from
-`../_lib/env.sh`), which blocks on a typed `yes` **unless** you pass `--yes`/`-y` as
-a script argument or set `DRILL_YES=1` (in `.env` or the environment). This is
-opt-in only — a script run non-interactively by an agent never silently proceeds;
-it must be told explicitly to skip the prompt. When Claude Code (or any agent)
-invokes these via Bash, always pass `--yes` or set `DRILL_YES=1` rather than trying
-to answer the prompt over stdin.
+`../_lib/env.sh`), which now just prints a banner and fires immediately —
+no typed-`yes` gate to get past. `--yes`/`-y`/`DRILL_YES=1` are still
+accepted (harmlessly) for backward compatibility.
 
-Read-only diagnostic scripts (`02_bloat_vacuum_diagnostic_sweep.sql`) need no
-confirmation — they only query, never mutate.
+Read-only diagnostic scripts (`02_bloat_vacuum_diagnostic_sweep.sql`) never
+called `confirm_drill` — they only query, never mutate.
 
 ## Automated full run
 
-`run_all.sh` runs setup, all 9 drills (03-06, 08-10, plus all 3 temp-spill
-sub-modes as 07-sort/07-hash/07-group), the diagnostic sweep, and cleanup —
-one command for the whole topic. `--list` previews the manifest; `--fast`
-(default, smaller row counts) / `--full` (doc-example multi-million-row
-scale) control drill size.
+`run_all.sh` runs setup once, then launches all 9 drills (03-06, 08-10, plus
+all 3 temp-spill sub-modes as 07-sort/07-hash/07-group) CONCURRENTLY (not
+one at a time) to stack simultaneous IO/CPU load, then runs the diagnostic
+sweep once every drill has finished — one command for the whole topic. No
+fix/remediation or cleanup step: every drill leaves its condition in place
+and guarantees at least a 90s observation window. `--list` previews the
+manifest; `--fast` (default, aggressive row counts) / `--full` (doc-example
+multi-million-row scale, even more aggressive) control drill size.
 
 ```bash
 ./run_all.sh --list                          # preview
@@ -59,14 +59,15 @@ DRILL_YES=1 ./run_all.sh                     # fast, full manifest
 | `08_simulate_create_index_temp_spike.sh` | temp files | `CREATE INDEX` itself spills / consumes `maintenance_work_mem` |
 | `09_simulate_replication_slot_wal_retention.sh` | replication | Inactive logical replication slot retains WAL, storage shrinks with no obvious cause |
 | `10_simulate_replica_lag_write_surge.sh` | replication | Primary write surge causes replica lag (full replica-side observation needs `REPLICA_PGHOST` set to a real read replica) |
-| `11_cleanup_bloat_drill.sql` | cleanup | Terminates drill sessions, drops the drill replication slot, drops all drill tables |
 
 See `README.md` in this folder for full usage examples and source-doc references.
 
 ## Safety
 
 - Non-production instances only.
-- Bloat/temp-file/WAL drills consume real disk — clean up promptly with `11_cleanup_bloat_drill.sql`.
-- `09` creates a real logical replication slot. Confirm it won't collide with a
-  legitimate consumer (DMS/Debezium/etc.) on a shared non-prod instance before running.
+- Bloat/temp-file/WAL drills consume real disk and are left in place — there
+  is no cleanup script — so hunters have a real window to detect them.
+- `09` creates a real logical replication slot that is never dropped. Confirm
+  it won't collide with a legitimate consumer (DMS/Debezium/etc.) on a shared
+  non-prod instance before running.
 - Never point `PGHOST`/`REPLICA_PGHOST` at a production endpoint.

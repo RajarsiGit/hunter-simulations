@@ -89,4 +89,5 @@ echo "Remediation levers (tune cautiously via parameter group, not blind global 
 echo "  autovacuum_max_workers, autovacuum_vacuum_cost_limit, autovacuum_vacuum_cost_delay,"
 echo "  maintenance_work_mem. For emergency single-table relief: VACUUM (ANALYZE) <table>;"
 echo ""
-echo "Drill complete. Run 11_cleanup_bloat_drill.sql when finished with this topic's drills."
+ensure_min_duration 90
+echo "Drill complete."

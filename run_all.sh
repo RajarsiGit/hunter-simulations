@@ -10,15 +10,19 @@
 # Sequential, not parallel — every topic hits the same instance, and running
 # e.g. topic 1's connection flood concurrently with topic 4's multi-million-
 # row inserts would make the resulting pg_stat_activity/log signal useless
-# for anyone trying to read it afterward. Each topic script already does its
-# own setup → drills → detection → cleanup, so the DB is back to a clean
-# state before the next topic starts.
+# for anyone trying to read it afterward.
+#
+# No fix/remediation or cleanup step anywhere in the suite: every drill
+# leaves its issue in place (sessions, locks, bloat, stale statistics, the
+# replication slot, etc.) and guarantees at least a 20-30s observation
+# window, so the hunters have a real window to detect them across all four
+# topics.
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Never point .env at a production endpoint.
 #
 # Usage:
 #   ./run_all.sh [--fast|--full] [--topics 1,3] [--no-dedupe-overlaps]
-#                [--no-cleanup] [--list] [--yes]
+#                [--list] [--yes]
 #
 #   --fast        Small scale/duration (default) — whole suite finishes in
 #                  ~15-20 minutes. Passed through to every topic.
@@ -32,9 +36,6 @@
 #                 when both topic 1 and topic 2 are selected, this passes
 #                 `--skip 16` to topic 02 to avoid a redundant flood. Pass
 #                 this flag to include it anyway.
-#   --no-cleanup  Passed through to every topic — leaves all drill objects
-#                  in place after the run (NOT recommended for a full-suite
-#                  run; things pile up fast across four topics).
 #   --list        Print the topic sequence and exit; runs nothing at any
 #                  level (also passed through so each topic prints its own
 #                  manifest instead of running it — verbose, see below).
@@ -68,7 +69,6 @@ source "_lib/runner.sh"
 TOPICS="1,2,3,4"
 SCALE_FLAG="--fast"
 DEDUPE=1
-CLEANUP_FLAG=""
 SUITE_LIST_ONLY=0
 YES_FLAG=()
 for arg in "$@"; do
@@ -77,7 +77,6 @@ for arg in "$@"; do
         --fast) SCALE_FLAG="--fast" ;;
         --topics=*) TOPICS="${arg#--topics=}" ;;
         --no-dedupe-overlaps) DEDUPE=0 ;;
-        --no-cleanup) CLEANUP_FLAG="--no-cleanup" ;;
         --list) SUITE_LIST_ONLY=1 ;;
         --yes|-y) YES_FLAG=(--yes) ;;
     esac
@@ -101,7 +100,7 @@ want_topic() { [[ ",${TOPICS}," == *",$1,"* ]]; }
 echo "======================================================================"
 echo " DBA Drill Suite — run_all.sh"
 echo " Target: ${PGUSER}@${PGHOST}:${PGPORT}/${PGDATABASE}"
-echo " Topics: ${TOPICS}  |  Scale: ${SCALE_FLAG}  |  Cleanup: $([[ -n "${CLEANUP_FLAG}" ]] && echo off || echo on)"
+echo " Topics: ${TOPICS}  |  Scale: ${SCALE_FLAG}  |  Cleanup: off (no fix/cleanup step anywhere)"
 [[ "${SUITE_LIST_ONLY}" -eq 1 ]] && echo " (--list: each topic below prints its own resolved manifest; nothing runs)"
 echo "======================================================================"
 
@@ -114,25 +113,25 @@ fi
 if want_topic 1; then
     RUNNER_LOG_DIR="${TOP_LOG_DIR}/01-connection-exhaustion" \
         step "topic1" "Topic 01 — Connection Exhaustion" \
-        ./01-connection-exhaustion/run_all.sh "${SCALE_FLAG}" ${CLEANUP_FLAG} "${LIST_ONLY_EXPORT[@]}" "${YES_FLAG[@]}"
+        ./01-connection-exhaustion/run_all.sh "${SCALE_FLAG}" "${LIST_ONLY_EXPORT[@]}" "${YES_FLAG[@]}"
 fi
 
 if want_topic 2; then
     RUNNER_LOG_DIR="${TOP_LOG_DIR}/02-locks-deadlocks-blocking-queries" \
         step "topic2" "Topic 02 — Locks, Deadlocks & Blocking Queries" \
-        ./02-locks-deadlocks-blocking-queries/run_all.sh "${SCALE_FLAG}" ${CLEANUP_FLAG} "${LIST_ONLY_EXPORT[@]}" "${YES_FLAG[@]}" "${TOPIC02_EXTRA[@]}"
+        ./02-locks-deadlocks-blocking-queries/run_all.sh "${SCALE_FLAG}" "${LIST_ONLY_EXPORT[@]}" "${YES_FLAG[@]}" "${TOPIC02_EXTRA[@]}"
 fi
 
 if want_topic 3; then
     RUNNER_LOG_DIR="${TOP_LOG_DIR}/03-slow-queries" \
         step "topic3" "Topic 03 — Slow Queries" \
-        ./03-slow-queries/run_all.sh "${SCALE_FLAG}" ${CLEANUP_FLAG} "${LIST_ONLY_EXPORT[@]}" "${YES_FLAG[@]}"
+        ./03-slow-queries/run_all.sh "${SCALE_FLAG}" "${LIST_ONLY_EXPORT[@]}" "${YES_FLAG[@]}"
 fi
 
 if want_topic 4; then
     RUNNER_LOG_DIR="${TOP_LOG_DIR}/04-autovacuum-bloat-replication-temp-files" \
         step "topic4" "Topic 04 — Autovacuum / Bloat / Replication / Temp Files" \
-        ./04-autovacuum-bloat-replication-temp-files/run_all.sh "${SCALE_FLAG}" ${CLEANUP_FLAG} "${LIST_ONLY_EXPORT[@]}" "${YES_FLAG[@]}"
+        ./04-autovacuum-bloat-replication-temp-files/run_all.sh "${SCALE_FLAG}" "${LIST_ONLY_EXPORT[@]}" "${YES_FLAG[@]}"
 fi
 
 runner_summary

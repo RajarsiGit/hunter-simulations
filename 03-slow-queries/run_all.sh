@@ -3,36 +3,38 @@
 # run_all.sh — Slow Queries: automated end-to-end drill run
 # SysCloud DAL Team
 #
-# Runs setup, all 6 drills in this folder (missing index, function-wrapped
-# predicate, offset pagination, JSONB CPU spike, stale statistics, retry
-# storm), the diagnostic sweep, then cleanup — one command instead of
-# stepping through scripts 01-09 by hand.
+# AGGRESSIVE MODE: setup runs once, then all 6 drills in this folder
+# (missing index, function-wrapped predicate, offset pagination, JSONB CPU
+# spike, stale statistics, retry storm) launch CONCURRENTLY against the
+# shared slowq_* tables to stack simultaneous load, then the diagnostic
+# sweep runs once every drill has finished. Note: 06 resets slowq_orders'
+# pg_stat counters (seq_scan/idx_scan) as part of forcing deterministic
+# staleness — if it lands mid-flight of 02's seq_scan burst it can zero out
+# that counter; the 1500-iteration burst plus 06's own separate table target
+# mean this rarely erases the signal in practice, but re-run 02 alone with
+# --only 02 if you need a clean seq_scan_tables reading.
+#
+# No fix/remediation or cleanup step, no confirmation gate: every drill
+# fires immediately, only demonstrates the problem, and leaves it in place
+# (stale stats, missing indexes, etc.) so the hunters have a real window to
+# detect them.
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Run only against a disposable/drill database.
 #
 # Usage:
 #   ./run_all.sh [--fast|--full] [--only 02,05] [--skip 07]
-#                [--with-fix] [--no-cleanup] [--list] [--yes]
+#                [--list] [--yes]
 #
 #   --fast        Small offset/session counts (default) — full manifest
 #                  finishes in a few minutes (setup itself takes 10-30s).
 #   --full        Doc-example scale (matches README quick-start numbers).
 #   --only 02,05  Only run these drill/detection ids (comma list).
 #   --skip 07     Skip these ids.
-#   --with-fix    For the simulate/fix scripts (02,03,05,06), also run `fix`
-#                  mode right after `simulate` — shows the before/after
-#                  remediation, not just the problem. Off by default (keeps
-#                  the run demonstrating "the problem" without also mutating
-#                  the schema with new indexes/ANALYZE).
-#   --no-cleanup  Leave drill tables/sessions in place after the run.
 #   --list        Print the manifest (with resolved args) and exit.
 #   --yes / -y    Non-interactive, passed through to each drill (or set
 #                  DRILL_YES=1).
 #
-# Ids: 01=setup, 02-07=drills, 08=diagnostic sweep, 09=cleanup
-#
-# Example — fast, include the fix/remediation pass:
-#   ./run_all.sh --with-fix --yes
+# Ids: 01=setup, 02-07=drills, 08=diagnostic sweep
 # =============================================================================
 
 set -uo pipefail
@@ -42,8 +44,6 @@ source "../_lib/runner.sh"
 
 FAST=1
 MODE_LABEL="fast"
-WITH_FIX=0
-DO_CLEANUP=1
 YES_FLAG=()
 for arg in "$@"; do
     case "${arg}" in
@@ -51,8 +51,6 @@ for arg in "$@"; do
         --fast) FAST=1; MODE_LABEL="fast" ;;
         --only=*) ONLY="${arg#--only=}" ;;
         --skip=*) SKIP="${arg#--skip=}" ;;
-        --with-fix) WITH_FIX=1 ;;
-        --no-cleanup) DO_CLEANUP=0 ;;
         --list) LIST_ONLY=1 ;;
         --yes|-y) YES_FLAG=(--yes) ;;
     esac
@@ -67,9 +65,9 @@ done
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-./run_all_logs/$(date +%Y%m%d_%H%M%S 2>/dev/null || echo run)}"
 
 if [[ "${FAST}" -eq 1 ]]; then
-    DEEP_OFFSET=50000; N07_SESS=10; N07_RETRY=5
+    DEEP_OFFSET=300000; N07_SESS=40; N07_RETRY=20
 else
-    DEEP_OFFSET=250000; N07_SESS=30; N07_RETRY=15
+    DEEP_OFFSET=600000; N07_SESS=80; N07_RETRY=40
 fi
 
 echo "=== Slow Queries — run_all.sh (${MODE_LABEL}) ==="
@@ -79,31 +77,19 @@ echo ""
 
 psql_always_step "01" "Setup slowq_* tables (~650k rows, no secondary indexes)" -f 01_setup_slow_query_tables.sql
 
-step "02" "Missing-index seq scan (simulate)"        ./02_simulate_missing_index_scan.sh simulate "${YES_FLAG[@]}"
-[[ "${WITH_FIX}" -eq 1 ]] && step "02fix" "Missing-index seq scan (fix)" ./02_simulate_missing_index_scan.sh fix "${YES_FLAG[@]}"
-
-step "03" "Function-wrapped predicate defeats index (simulate)" ./03_simulate_function_wrapped_predicate.sh simulate "${YES_FLAG[@]}"
-[[ "${WITH_FIX}" -eq 1 ]] && step "03fix" "Function-wrapped predicate (fix: expression index)" ./03_simulate_function_wrapped_predicate.sh fix "${YES_FLAG[@]}"
-
-step "04" "Deep OFFSET pagination cost growth"       ./04_simulate_offset_pagination.sh "${DEEP_OFFSET}"
-
-step "05" "JSONB field extraction CPU spike (simulate)" ./05_simulate_json_processing_spike.sh simulate "${YES_FLAG[@]}"
-[[ "${WITH_FIX}" -eq 1 ]] && step "05fix" "JSONB CPU spike (fix: expression index)" ./05_simulate_json_processing_spike.sh fix "${YES_FLAG[@]}"
-
-step "06" "Stale planner statistics bad estimate (simulate)" ./06_simulate_stale_statistics.sh simulate "${YES_FLAG[@]}"
-[[ "${WITH_FIX}" -eq 1 ]] && step "06fix" "Stale statistics (fix: ANALYZE)" ./06_simulate_stale_statistics.sh fix "${YES_FLAG[@]}"
-
-step "07" "Application retry storm"                  ./07_simulate_retry_storm.sh "${N07_SESS}" "${N07_RETRY}" "${YES_FLAG[@]}"
+bg_step "02" "Missing-index seq scan"                   ./02_simulate_missing_index_scan.sh "${YES_FLAG[@]}"
+bg_step "03" "Function-wrapped predicate defeats index" ./03_simulate_function_wrapped_predicate.sh "${YES_FLAG[@]}"
+bg_step "04" "Deep OFFSET pagination cost growth"       ./04_simulate_offset_pagination.sh "${DEEP_OFFSET}"
+bg_step "05" "JSONB field extraction CPU spike"         ./05_simulate_json_processing_spike.sh "${YES_FLAG[@]}"
+bg_step "06" "Stale planner statistics bad estimate"    ./06_simulate_stale_statistics.sh "${YES_FLAG[@]}"
+bg_step "07" "Application retry storm"                  ./07_simulate_retry_storm.sh "${N07_SESS}" "${N07_RETRY}" "${YES_FLAG[@]}"
+wait_bg_steps
 
 psql_always_step "08" "Diagnostic sweep (active queries, pg_stat_statements, missing-index/stale-stats candidates)" -f 08_diagnostic_query_sweep.sql
 
-if [[ "${DO_CLEANUP}" -eq 1 ]]; then
-    psql_always_step "09" "Cleanup (drop slowq_* tables + drill sessions)" -f 09_cleanup_slow_query_drill.sql
-else
-    echo ""
-    echo "⚠️  --no-cleanup: slowq_* tables and any drill sessions left in place. Clean up later with:"
-    echo "    psql -h \"\$PGHOST\" -p \"\$PGPORT\" -U \"\$PGUSER\" -d \"\$PGDATABASE\" -f 09_cleanup_slow_query_drill.sql"
-fi
+echo ""
+echo "No cleanup step: slowq_* tables and any drill sessions are left in place"
+echo "so hunters have a real window to detect them."
 
 [[ "${LIST_ONLY}" -eq 1 ]] && exit 0
 runner_summary

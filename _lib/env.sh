@@ -40,46 +40,30 @@ export PGBOUNCER_ADMIN_PASSWORD="${PGBOUNCER_ADMIN_PASSWORD:-${PGPASSWORD:-}}"
 
 # confirm_drill "<what this drill is about to do>" "$@"
 #
-# Prints a safety banner and blocks on a typed "yes" — UNLESS explicitly
-# bypassed via --yes/-y (as one of the script's own args, passed through as
-# "$@") or DRILL_YES=1 in the environment/.env. This is opt-in only: a
-# non-interactive shell does NOT auto-skip the prompt, so an agent or cron
-# job can never trigger a drill by accident.
+# Prints a safety banner and fires immediately — no typed confirmation, ever.
+# Aggressive-mode: drills are meant to fire on demand without a human in the
+# loop. --yes/-y/DRILL_YES=1 are still accepted (harmlessly) for backward
+# compatibility with existing invocations, but they're no longer required —
+# omitting them no longer blocks anything.
 confirm_drill() {
     local message="$1"
-    shift || true
-    local auto="${DRILL_YES:-0}"
-    local arg
-    for arg in "$@"; do
-        if [[ "${arg}" == "--yes" || "${arg}" == "-y" ]]; then
-            auto=1
-        fi
-    done
-
     echo ""
     echo "⚠️  ${message}"
     echo "⚠️  NON-PRODUCTION USE ONLY. Target: ${PGUSER}@${PGHOST}:${PGPORT}/${PGDATABASE}"
-
-    if [[ "${auto}" == "1" ]]; then
-        echo "--yes / DRILL_YES=1 set — auto-confirmed (agent/non-interactive mode)."
-        return 0
-    fi
-
-    read -r -p "Type 'yes' to proceed: " reply
-    [[ "${reply}" == "yes" ]] || { echo "Aborted."; exit 1; }
+    echo "Firing immediately (no confirmation gate) — aggressive mode."
 }
 
 # ensure_min_duration [floor_seconds]
 #
 # Pads the calling script with a trailing sleep so its total wall time (as
 # measured by bash's $SECONDS, which counts from shell start) is at least
-# <floor_seconds> (default 30). Call this as the last thing before a drill
+# <floor_seconds> (default 90). Call this as the last thing before a drill
 # script's final echo. Guarantees a minimum observation window for anyone
 # querying pg_locks/pg_stat_activity mid-drill, even when a script's HOLD
 # argument is small or its internal timing is fixed/short — a no-op if the
 # script has already run that long.
 ensure_min_duration() {
-    local floor="${1:-30}"
+    local floor="${1:-90}"
     if (( SECONDS < floor )); then
         local remaining=$(( floor - SECONDS ))
         echo ""
@@ -127,7 +111,7 @@ run_seq_scan_burst() {
 #
 # Runs <sql> then pg_sleep(seconds) in the SAME statement, backgrounded, so
 # the session stays state='active' in pg_stat_activity for at least <seconds>
-# (default 35 — just over the hunter's 30s query_slow threshold; see
+# (default 120 — well over the hunter's 30s query_slow threshold; see
 # AI-Hunters/queries/slow-queries/slow-queries.sql). A single EXPLAIN ANALYZE
 # invocation completes in well under a second and is never sampled as "slow"
 # by the poller (10s interval) without this. Sets the caller's HOLD_PID
@@ -145,7 +129,7 @@ run_seq_scan_burst() {
 hold_session_active() {
     local app_name="$1"
     local sql="$2"
-    local seconds="${3:-35}"
+    local seconds="${3:-120}"
     "${PSQL[@]}" -c "SET application_name = '${app_name}';
                       SELECT (SELECT count(*) FROM (${sql}) _sustain_sub) AS matched, pg_sleep(${seconds});" \
         >/dev/null &

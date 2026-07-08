@@ -12,8 +12,8 @@
 #
 # Reproduces: several indexes on a churn table accumulate dead entries and
 # grow disproportionately to the table itself. Shows detection via
-# pg_stat_user_indexes (size + scan usage) and remediation via
-# REINDEX INDEX CONCURRENTLY / dropping an unused index.
+# pg_stat_user_indexes (size + scan usage). No remediation (REINDEX / drop)
+# is applied — the bloat is left in place for the hunter to detect.
 #
 # Usage:
 #   ./04_simulate_index_bloat.sh [row_count] [--yes]
@@ -79,23 +79,13 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          ORDER BY pg_relation_size(indexrelid) DESC;"
 
 echo ""
-echo "--- Remediation demo: REINDEX CONCURRENTLY on the payload index ---"
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-     -c "REINDEX INDEX CONCURRENTLY idx_index_bloat_drill_payload;" 2>&1 | sed 's/^/  [REINDEX] /'
-
-echo ""
-echo "--- Index sizes AFTER REINDEX CONCURRENTLY ---"
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-     -c "SELECT indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) AS index_size, idx_scan
-         FROM pg_stat_user_indexes
-         WHERE relname = 'index_bloat_drill'
-         ORDER BY pg_relation_size(indexrelid) DESC;"
-
-echo ""
-echo "If an index shows idx_scan=0 and no application depends on it, drop it:"
+echo "Remediation reference (NOT applied — bloat is left in place for the hunter"
+echo "to detect): REINDEX INDEX CONCURRENTLY idx_index_bloat_drill_payload; or, if"
+echo "an index shows idx_scan=0 and no application depends on it, drop it:"
 echo "  DROP INDEX CONCURRENTLY idx_index_bloat_drill_payload;"
 echo ""
 echo "For fillfactor-tuned hot-update tables: ALTER TABLE ... SET (fillfactor = 80);"
 echo "(requires a VACUUM FULL / table rewrite to take effect on existing data)."
 echo ""
-echo "Drill complete. Run 11_cleanup_bloat_drill.sql when finished with this topic's drills."
+ensure_min_duration 90
+echo "Drill complete."

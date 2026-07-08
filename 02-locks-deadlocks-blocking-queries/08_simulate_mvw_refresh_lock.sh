@@ -121,10 +121,6 @@ if [[ "${MODE}" == "blocking" ]]; then
     echo "         JOIN  pg_stat_activity a ON a.pid = l.pid"
     echo "         WHERE l.relation = 'lock_test_mvw'::regclass"
     echo "         ORDER BY l.granted DESC;\""
-    echo ""
-    echo "  Terminate the refresh if it must be rescheduled off-peak:"
-    echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
-    echo "    -v app_pattern='%drill_mvw_refresh%' -f 19_cleanup_drill_sessions.sql"
 else
     echo "  In concurrent mode Session B should return stale (pre-refresh) data immediately."
     if [[ "${INJECT_DUP}" == "yes" ]]; then

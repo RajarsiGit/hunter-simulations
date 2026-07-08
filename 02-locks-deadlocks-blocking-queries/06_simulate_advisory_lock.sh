@@ -97,10 +97,6 @@ echo "               left(query,100)"
 echo "         FROM  pg_stat_activity"
 echo "         WHERE query ILIKE '%pg_advisory_lock%';\""
 echo ""
-echo "  Terminate Session A to unblock Session B (deployment request in production):"
-echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
-echo "    -v app_pattern='%drill_advisory_holder%' -f 19_cleanup_drill_sessions.sql"
-echo ""
 echo "Session A releases after ${HOLD_SECONDS}s. Waiting..."
 wait
 ensure_min_duration 30

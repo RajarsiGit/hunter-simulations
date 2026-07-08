@@ -12,7 +12,7 @@
 #   Session B  attempts to update the same row → blocks on A's RowExclusiveLock.
 #
 # Both sessions are tagged with a drill application_name so they are
-# trivially visible in pg_stat_activity and removable with 19_cleanup_drill_sessions.sql.
+# trivially visible in pg_stat_activity.
 #
 # What to observe while running:
 #   - Session B shows wait_event_type='Lock', wait_event='transactionid'
@@ -85,10 +85,6 @@ echo ""
 echo "  -- Blocking tree:"
 echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
 echo "    -f 09_lock_triage_queries.sql"
-echo ""
-echo "  -- Terminate blocker (simulates deployment request execution):"
-echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
-echo "    -v app_pattern='%drill_row_lock_blocker%' -f 19_cleanup_drill_sessions.sql"
 echo ""
 echo "Session A will auto-release after ${HOLD_SECONDS}s. Waiting for drill to complete..."
 wait

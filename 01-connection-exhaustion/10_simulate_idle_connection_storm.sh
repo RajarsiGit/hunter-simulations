@@ -63,9 +63,6 @@ echo "${NUM_CONNECTIONS} plain-idle connections in flight (application_name='dri
 echo "Verify with (note state='idle', NOT 'idle in transaction'):"
 echo "  psql -c \"SELECT state, count(*) FROM pg_stat_activity WHERE application_name='drill_idle_conn_storm' GROUP BY state;\""
 echo ""
-echo "Clean up early with:"
-echo "  psql -v app_pattern='%drill_idle_conn_storm%' -f 08_cleanup_drill_sessions.sql"
-echo ""
 echo "Waiting for connections to self-expire after ${HOLD_SECONDS}s..."
 wait
 echo "Drill complete."

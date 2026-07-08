@@ -12,8 +12,8 @@
 #
 # Reproduces: a table receives continuous UPDATE/DELETE churn faster than
 # (auto)vacuum reclaims dead tuples, so n_dead_tup keeps climbing even while
-# vacuum runs. Shows the fix: VACUUM (VERBOSE, ANALYZE), and for severe bloat,
-# REINDEX CONCURRENTLY on any affected index.
+# vacuum runs. Leaves the bloat in place (no VACUUM/REINDEX is run) so the
+# hunter has a real window to detect it.
 #
 # Usage:
 #   ./03_simulate_table_bloat_update_churn.sh [row_count] [churn_rounds] [--yes]
@@ -72,24 +72,14 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          FROM pg_stat_user_tables WHERE relname = 'bloat_drill_records';"
 
 echo ""
-echo "--- Remediation: VACUUM (VERBOSE, ANALYZE) ---"
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-     -c "VACUUM (VERBOSE, ANALYZE) bloat_drill_records;" 2>&1 | sed 's/^/  [VACUUM] /'
-
-echo ""
-echo "--- Dead-tuple stats AFTER manual VACUUM ---"
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-     -c "SELECT relname, n_live_tup, n_dead_tup, last_vacuum
-         FROM pg_stat_all_tables WHERE relname = 'bloat_drill_records';"
-
-echo ""
-echo "If bloat persists after VACUUM (e.g. a long transaction is pinning an old"
-echo "snapshot), see ../02-locks-deadlocks-blocking-queries/12_simulate_long_txn_vacuum_bloat.sh"
-echo "(the long-txn-blocks-vacuum drill), or tune table-level autovacuum:"
+echo "Remediation reference (NOT applied — bloat is left in place for the hunter"
+echo "to detect): VACUUM (VERBOSE, ANALYZE) bloat_drill_records; and for severe,"
+echo "already-bloated indexes: REINDEX INDEX CONCURRENTLY <name>; or tune"
+echo "table-level autovacuum:"
 echo ""
 echo "  ALTER TABLE bloat_drill_records SET ("
 echo "      autovacuum_vacuum_scale_factor = 0.02, autovacuum_vacuum_threshold = 5000,"
 echo "      autovacuum_analyze_scale_factor = 0.01, autovacuum_analyze_threshold = 5000);"
 echo ""
-echo "For severe, already-bloated indexes: REINDEX INDEX CONCURRENTLY <name>;"
-echo "Drill complete. Run 11_cleanup_bloat_drill.sql when finished with this topic's drills."
+ensure_min_duration 90
+echo "Drill complete."

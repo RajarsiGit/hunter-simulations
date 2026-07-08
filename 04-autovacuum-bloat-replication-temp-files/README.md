@@ -9,8 +9,10 @@ Simulation/reproduction scripts for the fourth `simulations/` topic. Derived fro
 No prior top-level script folder existed for this topic — everything here is new,
 following the same conventions as `../01-connection-exhaustion` and
 `../02-locks-deadlocks-blocking-queries`: `.env`-based credentials via
-`../_lib/env.sh`, `confirm_drill` safety confirmation (bypass with `--yes`/`-y`/
-`DRILL_YES=1`), `application_name` tagging per drill session, non-production only.
+`../_lib/env.sh`, `confirm_drill` printing a banner and firing immediately
+(no confirmation gate — `--yes`/`-y`/`DRILL_YES=1` still accepted but no
+longer required), `application_name` tagging per drill session,
+non-production only.
 
 ## Setup
 
@@ -38,7 +40,13 @@ psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
 | `08_simulate_create_index_temp_spike.sh` | `CREATE INDEX` build itself spends temp/`maintenance_work_mem` | Investigation Guide §5.8 (Scenario C4) |
 | `09_simulate_replication_slot_wal_retention.sh` | Inactive logical replication slot retains WAL; storage shrinks with no obvious cause | Investigation Guide §4.7 (Scenario B3), Issue Guide §4.3 WAL Scenarios 1-2 |
 | `10_simulate_replica_lag_write_surge.sh` | Primary write surge → replica lag (full replica-side check needs `REPLICA_PGHOST`) | Investigation Guide §4.5-4.6 (Scenarios B1-B2) |
-| `11_cleanup_bloat_drill.sql` | Terminates drill sessions, drops the drill replication slot, drops all drill tables | — |
+
+No fix/remediation or cleanup scripts are included in this folder — every
+drill fires immediately and leaves its condition in place (bloat
+un-vacuumed, indexes un-reindexed, statistics stale, the replication slot
+un-dropped), guaranteeing at least a 90s observation window, so the hunters
+have a real window to detect them. `run_all.sh` also launches all 9 drills
+concurrently by default to stack simultaneous IO/CPU load.
 
 **Not independently scripted (diagnostic-only / needs infrastructure a single script
 can't provision):**
@@ -55,9 +63,11 @@ can't provision):**
 
 ## Automated full run
 
-`run_all.sh` runs setup, all 9 drills (including all 3 temp-file-spill
-sub-modes), the diagnostic sweep, then cleanup — one command instead of
-stepping through 01-11 by hand.
+`run_all.sh` runs setup once, then launches all 9 drills (including all 3
+temp-file-spill sub-modes) CONCURRENTLY (not one at a time) to stack
+simultaneous IO/CPU load, then runs the diagnostic sweep once every drill
+has finished — one command instead of stepping through 01-10 by hand. No
+cleanup step.
 
 ```bash
 # Preview the manifest without touching the DB
@@ -106,21 +116,18 @@ DRILL_YES=1 ./04_simulate_index_bloat.sh 500000
 # Drill H — write-surge replica lag (primary-only, or full with a real replica)
 ./10_simulate_replica_lag_write_surge.sh 3000000 --yes
 REPLICA_PGHOST=<read-replica-endpoint> ./10_simulate_replica_lag_write_surge.sh 3000000 --yes
-
-# Cleanup everything from this topic
-psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
-     -f 11_cleanup_bloat_drill.sql
 ```
 
 ## Conventions
 
 - All scripts source `../_lib/env.sh`, which loads `.env` from the current working
   directory and exports `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/`PGDATABASE`.
-- Mutating scripts call `confirm_drill "<message>" "$@"` — bypass with `--yes`/`-y`
-  or `DRILL_YES=1` for non-interactive/agent runs. Read-only `.sql` diagnostic
-  files skip confirmation entirely.
+- Mutating scripts call `confirm_drill "<message>" "$@"`, which now only
+  prints a banner and fires immediately — no confirmation gate to bypass.
+  Read-only `.sql` diagnostic files skip it entirely (they never called it).
 - Every drill session is tagged via `application_name` (`drill_av_*`,
   `drill_index_bloat*`, `drill_temp_spill_*`, `drill_repl_slot_wal*`,
   `drill_replica_lag_writer*`) so it's trivially identifiable in
-  `pg_stat_activity` and cleanly removable via `11_cleanup_bloat_drill.sql`.
+  `pg_stat_activity`. There is no cleanup script — drill tables, the
+  replication slot, and any sessions are left in place after the run.
 - Never point `PGHOST`/`REPLICA_PGHOST` at a production endpoint.

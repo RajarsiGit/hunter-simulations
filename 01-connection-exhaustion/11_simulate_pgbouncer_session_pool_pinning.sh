@@ -77,10 +77,6 @@ echo "  psql -h ${PGBOUNCER_HOST} -p ${PGBOUNCER_PORT} -U ${PGBOUNCER_ADMIN_USER
 echo "Note: pg_blocking_pids()/pg_stat_activity on RDS will NOT show this contention —"
 echo "it never reaches Postgres. That distinction is the key diagnostic signal for this failure mode."
 echo ""
-echo "Clean up early with:"
-echo "  psql -h ${PGHOST} -p 5432 -U <superuser> -d ${PGDATABASE} \\"
-echo "    -v app_pattern='%drill_session_pinning%' -f 08_cleanup_drill_sessions.sql"
-echo ""
 echo "Waiting for pinned sessions to self-expire after ${HOLD_SECONDS}s..."
 wait
 echo "Drill complete."

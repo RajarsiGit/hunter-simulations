@@ -129,4 +129,5 @@ echo ""
 echo "Memory risk formula before raising work_mem globally:"
 echo "  worst_case_memory ≈ active_connections × work_mem × sort/hash_nodes_per_query"
 echo ""
-echo "Drill complete (mode=${MODE}). Run 11_cleanup_bloat_drill.sql when finished."
+ensure_min_duration 90
+echo "Drill complete (mode=${MODE})."

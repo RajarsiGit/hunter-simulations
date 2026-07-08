@@ -87,4 +87,5 @@ echo "class if replay genuinely can't keep up, or route analytical reads off the
 echo "lagging replica. For a long-running query stalling replay on the replica"
 echo "itself (Scenario B2), cancel it there: SELECT pg_cancel_backend(<pid>);"
 echo ""
-echo "Drill complete. Run 11_cleanup_bloat_drill.sql when finished with this topic's drills."
+ensure_min_duration 90
+echo "Drill complete."

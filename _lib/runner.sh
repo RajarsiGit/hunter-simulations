@@ -10,6 +10,11 @@
 #   - should_run <id>   — honors --only/--skip id filters (comma lists)
 #   - step <id> <label> <cmd...>  — runs (or, in --list mode, just prints) one
 #     manifest entry; never aborts the overall run on a single step's failure
+#   - bg_step <id> <label> <cmd...> / wait_bg_steps — aggressive-mode
+#     counterpart to step(): launches immediately in the background instead
+#     of blocking, so a manifest's drills all fire concurrently and stack
+#     simultaneous issues on the target; wait_bg_steps blocks until the
+#     whole batch finishes and folds each result into the summary
 #   - runner_summary    — prints a pass/fail/timing table at the end and
 #     returns non-zero if anything failed (for a script's own exit code)
 #
@@ -25,6 +30,9 @@ RUNNER_RESULTS=()   # "id|label|status|seconds"
 ONLY="${ONLY:-}"
 SKIP="${SKIP:-}"
 LIST_ONLY="${LIST_ONLY:-0}"
+BG_PIDS=()
+BG_LABELS=()
+BG_START=0
 
 # should_run <id> — false (1) if --only was given and id isn't in it, or if
 # --skip was given and id is in it. True (0) otherwise.
@@ -70,6 +78,71 @@ run_step() {
 }
 
 _runner_ts() { date +%s; }
+
+# bg_step <id> <label> <command...>
+#
+# Aggressive-mode counterpart to step(): launches the command in the
+# background immediately instead of blocking, so every drill in a manifest's
+# "drills" phase fires concurrently and stacks simultaneous issues on the
+# target instead of running one at a time. Honors --only/--skip/--list the
+# same as step(). Call wait_bg_steps afterward (before any detection/RCA
+# step) to block until every launched drill has finished and fold its result
+# into RUNNER_RESULTS/runner_summary.
+bg_step() {
+    local id="$1" label="$2"; shift 2
+    if [[ "${LIST_ONLY}" -eq 1 ]]; then
+        if should_run "${id}"; then
+            printf '  [%-3s] %-48s %s  (parallel)\n' "${id}" "${label}" "$*"
+        else
+            printf '  [%-3s] %-48s %s  (would be SKIPPED by --only/--skip)\n' "${id}" "${label}" "$*"
+        fi
+        return 0
+    fi
+    if ! should_run "${id}"; then
+        echo "⏭  [${id}] ${label} (skipped)"
+        return 0
+    fi
+    [[ "${BG_START}" -eq 0 ]] && BG_START=$(_runner_ts)
+    echo "▶ [${id}] ${label} — launching in parallel: $*"
+    if [[ -n "${RUNNER_LOG_DIR}" ]]; then
+        mkdir -p "${RUNNER_LOG_DIR}"
+        local slug logfile
+        slug="$(printf '%s' "[${id}] ${label}" | tr -c 'A-Za-z0-9_' '_')"
+        logfile="${RUNNER_LOG_DIR}/$(printf '%03d' "${#BG_PIDS[@]}")_${slug}.log"
+        ( "$@" > "${logfile}" 2>&1 ) &
+    else
+        ( "$@" ) &
+    fi
+    BG_PIDS+=("$!")
+    BG_LABELS+=("[${id}] ${label}")
+}
+
+# wait_bg_steps — blocks until every bg_step-launched drill in this batch
+# has finished, prints a per-drill pass/fail line, and records each into
+# RUNNER_RESULTS for the final runner_summary. Resets the batch afterward so
+# a run_all.sh can call bg_step/wait_bg_steps more than once (e.g. drills
+# phase, then a second parallel phase) if needed.
+wait_bg_steps() {
+    [[ "${LIST_ONLY}" -eq 1 ]] && return 0
+    [[ "${#BG_PIDS[@]}" -eq 0 ]] && return 0
+    echo ""
+    echo "--- Waiting for ${#BG_PIDS[@]} parallel drill(s) to finish ---"
+    local i status end elapsed
+    for i in "${!BG_PIDS[@]}"; do
+        wait "${BG_PIDS[$i]}"; status=$?
+        end=$(_runner_ts)
+        elapsed=$(( end - BG_START ))
+        RUNNER_RESULTS+=("${BG_LABELS[$i]}|${status}|${elapsed}")
+        if [[ "${status}" -eq 0 ]]; then
+            echo "✔ ${BG_LABELS[$i]} (ok, parallel batch ${elapsed}s)"
+        else
+            echo "✘ ${BG_LABELS[$i]} — exit ${status} (parallel batch ${elapsed}s)"
+        fi
+    done
+    BG_PIDS=()
+    BG_LABELS=()
+    BG_START=0
+}
 
 # step <id> <label> <command...>
 #

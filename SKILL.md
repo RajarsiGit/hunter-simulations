@@ -8,13 +8,19 @@ description: Run the full DBA drill suite (all four simulations/ topics — conn
 Every topic under `simulations/` (`01-connection-exhaustion`,
 `02-locks-deadlocks-blocking-queries`, `03-slow-queries`,
 `04-autovacuum-bloat-replication-temp-files`) has its own `run_all.sh` that
-sequences that topic's full manifest — setup → every drill → detection →
-cleanup — behind one command with a pass/fail summary. `simulations/run_all.sh`
-runs all four topics' `run_all.sh` in sequence (never in parallel — they
-share one instance, and interleaved drills would make the resulting
-`pg_stat_activity`/log signal unreadable). Reach for this skill instead of
-invoking each topic's individual `NN_simulate_*`/diagnostic/cleanup scripts
-one at a time when the ask is "run everything" or "run this whole topic".
+sequences that topic's full manifest — setup → every drill (launched
+concurrently, not one at a time) → detection — behind one command with a
+pass/fail summary. No topic runs a fix/remediation or cleanup step, and no
+drill blocks on a confirmation prompt: every drill fires immediately, stacks
+on top of the others running in parallel, and leaves its issue in place,
+guaranteeing at least a 25-90s observation window (topic-dependent) so the
+hunters have a real window to detect it. `simulations/run_all.sh` runs all
+four topics' `run_all.sh` in sequence (never in parallel — they share one
+instance, and interleaved drills would make the resulting
+`pg_stat_activity`/log signal unreadable; concurrency is within a topic's
+own drills, not across topics). Reach for this skill instead of invoking
+each topic's individual `NN_simulate_*`/diagnostic scripts one at a time
+when the ask is "run everything" or "run this whole topic".
 
 The per-topic skills (`01-connection-exhaustion`,
 `02-locks-deadlocks-blocking-queries`, `03-slow-queries`,
@@ -31,13 +37,11 @@ subprocess inherits them — no per-topic `.env` needed.
 
 ## Non-interactive / agent use
 
-`DRILL_YES=1` (set once in `simulations/.env`) or a per-invocation `--yes`
-is the user's standing authorization to run any script in this catalog
-against the configured target — the same convention as every individual
-drill script. When it's set, invoke `run_all.sh` scripts directly; no need
-to separately pause and ask before each run. Omitting it falls back to the
-interactive typed-`yes` prompt inside each drill, which will hang an
-unattended agent run — always pass `--yes` or rely on `DRILL_YES=1`.
+Drills fire immediately — there is no typed-`yes` confirmation gate to get
+past. `--yes`/`DRILL_YES=1` are still accepted by every script (harmlessly)
+for backward compatibility, but omitting them no longer blocks anything, so
+`run_all.sh` scripts can always be invoked directly with no risk of hanging
+an unattended agent run.
 
 ## Usage
 
@@ -66,9 +70,13 @@ Every `run_all.sh` (top-level and per-topic) supports:
 | `--list` | Print the resolved manifest (with actual args) and exit — runs nothing. Always safe to use for a preview before committing to `--yes`. |
 | `--fast` (default) | Small scale/duration — a full run finishes in minutes. |
 | `--full` | Doc-example scale (matches each topic README's quick-start numbers) — slower, closer to a real incident's shape. |
-| `--only <ids>` / `--skip <ids>` | Narrow a topic's manifest to specific script ids (comma list). Detection and cleanup steps always run regardless — they're never silently skipped by `--only`. Top-level only: `--topics <1-4 list>` selects which topics run at all. |
-| `--no-cleanup` | Leave drill objects/sessions in place after the run (for manual follow-up poking). Default is to clean up. |
-| `--yes` / `-y` | Non-interactive — same meaning as in every individual drill script (or set `DRILL_YES=1`). |
+| `--only <ids>` / `--skip <ids>` | Narrow a topic's manifest to specific script ids (comma list). Detection steps always run regardless — they're never silently skipped by `--only`. Top-level only: `--topics <1-4 list>` selects which topics run at all. |
+| `--yes` / `-y` | Accepted for backward compatibility (or set `DRILL_YES=1`) — no longer required; drills fire without it. |
+
+Within each topic, every drill in the manifest launches concurrently
+(`bg_step` in `_lib/runner.sh`) rather than one at a time, so the target
+sees multiple simultaneous issues stacked on top of each other before
+detection runs.
 
 Topic 02's script 16 (`simulate_connection_exhaustion.sh`) overlaps topic
 01's whole purpose — the top-level `run_all.sh` automatically passes
@@ -91,9 +99,8 @@ end of every run.
    realistic/doc-example scale, in which case add `--full`).
 3. Read the summary table — any non-zero exit needs a look at that step's
    log file before declaring the drill run complete.
-4. Cleanup runs automatically at the end of every topic; only skip it
-   (`--no-cleanup`) if the user explicitly wants to keep poking at the
-   drill state afterward.
+4. No cleanup step runs at the end of any topic — drill state is left in
+   place intentionally so hunters have a real detection window.
 
 See `simulations/README.md` for the full topic index and per-topic
 `README.md`/`SKILL.md` for each topic's individual script catalog.

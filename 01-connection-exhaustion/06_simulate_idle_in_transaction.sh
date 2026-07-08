@@ -8,8 +8,8 @@
 #     This script opens transactions and deliberately does NOT commit them.
 #
 # All sessions are tagged with application_name='drill_idle_txn' so they
-# can be found with 01_diagnostic_queries.sql and cleaned up with
-# 08_cleanup_drill_sessions.sql (-v app_pattern='%drill_idle_txn%').
+# can be found with 01_diagnostic_queries.sql. No cleanup script — sessions
+# are left to self-expire so the hunters have a real window to detect them.
 #
 # Usage:
 #   ./06_simulate_idle_in_transaction.sh [num_sessions] [hold_seconds] [target_table] [--yes]
@@ -58,9 +58,6 @@ echo ""
 echo "${NUM_SESSIONS} idle-in-transaction sessions running (application_name='drill_idle_txn')."
 echo "Verify with:"
 echo "  psql ... -c \"SELECT pid, state, now()-state_change FROM pg_stat_activity WHERE application_name='drill_idle_txn';\""
-echo ""
-echo "Clean up early (before natural expiry) with:"
-echo "  psql -v app_pattern='%drill_idle_txn%' -f 08_cleanup_drill_sessions.sql"
 echo ""
 echo "Waiting for sessions to self-expire after ${HOLD_SECONDS}s..."
 wait

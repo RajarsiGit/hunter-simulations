@@ -3,9 +3,9 @@
 Simulation and first-response scripts for PostgreSQL/RDS locking incidents.
 Ported from the original `locks-deadlocks-blocking-queries/` drill set
 (scripts 10–27) onto the shared `simulations/_lib/env.sh` conventions — `.env`
-credential loading and a non-interactive `--yes` / `DRILL_YES=1` confirmation
-bypass — plus one new automated-RCA script (20) derived from
-`gpt-docs/ChatGPT-RDS PostgreSQL Lock Troubleshooting.md`.
+credential loading, with `confirm_drill()` printing a banner and firing
+immediately (no confirmation gate) — plus one new automated-RCA script (20)
+derived from `gpt-docs/ChatGPT-RDS PostgreSQL Lock Troubleshooting.md`.
 
 See `SKILL.md` in this folder for the full script catalog and agent-usage
 notes, and `simulations/.env.example` for the credential template.
@@ -48,14 +48,21 @@ and `lock_test_workflow_jobs` — all required by scripts 02–18.
 | File | Purpose |
 |---|---|
 | `09_lock_triage_queries.sql` | Full first-response triage sweep (blocking tree, recursive chain, idle-in-txn sessions, pg_locks inventory, deadlock counter, long transactions, index/vacuum progress, connection headroom, advisory locks). |
-| `19_cleanup_drill_sessions.sql` | Generic kill-switch — terminates any session matching a `drill_*` `application_name` pattern. |
-| `10_cleanup_lock_drill.sql` | Full teardown — terminates drill sessions AND drops every `lock_test_*` table/index/MVW. |
 | `20_lock_incident_rca.sh` | **New.** Automated session + lock snapshot, incident classification, blast-radius calculation, and RCA report. Safe (read-only) by default. |
+
+No cleanup scripts are included in this folder, and no drill blocks on a
+confirmation prompt — every drill fires immediately, guarantees at least a
+90s minimum observation window (`ensure_min_duration` in `_lib/env.sh`), and
+leaves its sessions/tables in place so the hunters have a real window to
+detect them.
 
 ## Automated full run
 
-`run_all.sh` runs setup, all 15 drills, the triage sweep, automated RCA, and
-full cleanup — one command instead of stepping through 01-20 by hand.
+`run_all.sh` runs setup once, then launches all 15 drills CONCURRENTLY (not
+one at a time) against the shared `lock_test_*` tables to stack simultaneous
+lock contention, then runs the triage sweep and automated RCA once every
+drill has finished — one command instead of stepping through 01-20 by hand.
+No cleanup step.
 
 ```bash
 # Preview the manifest without touching the DB
@@ -116,19 +123,8 @@ psql -h "$PGHOST" -p "${PGPORT:-5432}" -U "$PGUSER" -d "$PGDATABASE" \
 ./20_lock_incident_rca.sh --remediate-cancel --yes
 ```
 
-## Cleanup
-
-```bash
-# Kill just the drill sessions from a specific script:
-psql -h "$PGHOST" -p "${PGPORT:-5432}" -U "$PGUSER" -d "$PGDATABASE" \
-  -v app_pattern='%drill_row_lock_blocker%' -f 19_cleanup_drill_sessions.sql
-
-# Full teardown — drill sessions + all lock_test_* tables/indexes/MVWs:
-psql -h "$PGHOST" -p "${PGPORT:-5432}" -U "$PGUSER" -d "$PGDATABASE" \
-  -f 10_cleanup_lock_drill.sql
-```
-
-**Safety:** every simulator requires a typed `yes` confirmation (or `--yes`/
-`DRILL_YES=1` for non-interactive/agent use) before running, and tags its
-sessions with a `drill_*` `application_name`. Never point `.env` at a
-production endpoint.
+**Safety:** every simulator fires immediately with no confirmation gate
+(`--yes`/`DRILL_YES=1` are accepted but no longer required), and tags its
+sessions with a `drill_*` `application_name`. There is no cleanup script —
+drill sessions/tables are left in place after the run. Never point `.env` at
+a production endpoint.

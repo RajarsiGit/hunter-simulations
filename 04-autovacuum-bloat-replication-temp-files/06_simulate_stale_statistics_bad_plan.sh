@@ -10,8 +10,9 @@
 #
 # Reproduces: autoanalyze is disabled on a table (simulating "didn't run
 # frequently enough"), a bulk data-shape change happens, and the planner's
-# stale row-count/selectivity estimate produces a bad plan. Shows the
-# before/after EXPLAIN once ANALYZE is run manually.
+# stale row-count/selectivity estimate produces a bad plan. Leaves autovacuum
+# disabled and statistics stale (no ANALYZE is run) so the hunter has a real
+# window to detect it.
 #
 # Usage:
 #   ./06_simulate_stale_statistics_bad_plan.sh [row_count] [--yes]
@@ -22,7 +23,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 ROW_COUNT="${1:-500000}"
 
-confirm_drill "This disables autovacuum/autoanalyze on bloat_drill_records temporarily, bulk-updates it so its data shape no longer matches planner statistics, and shows the resulting bad EXPLAIN plan before restoring autoanalyze and re-running ANALYZE." "$@"
+confirm_drill "This disables autovacuum/autoanalyze on bloat_drill_records, bulk-updates it so its data shape no longer matches planner statistics, and shows the resulting bad EXPLAIN plan. Autovacuum is left disabled and statistics left stale." "$@"
 
 echo ""
 echo "=== DRILL: Stale Statistics Cause Bad Query Plans (Investigation Guide §3.9 / Scenario A5) ==="
@@ -63,21 +64,13 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      2>&1 | sed 's/^/  [stale plan] /'
 
 echo ""
-echo "--- Remediation: ANALYZE (and re-enable autovacuum) ---"
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-     -c "ANALYZE bloat_drill_records;
-         ALTER TABLE bloat_drill_records SET (autovacuum_enabled = true);"
-
-echo ""
-echo "--- EXPLAIN AFTER ANALYZE (row estimate should now track actual much closer) ---"
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-     -c "EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM bloat_drill_records WHERE tenant_id = 999 AND status = 'ACTIVE';" \
-     2>&1 | sed 's/^/  [fresh plan]  /'
-
-echo ""
-echo "For persistently skewed columns, raise the statistics target instead of relying"
-echo "on the default sample size:"
+echo "Remediation reference (NOT applied — autovacuum stays disabled and statistics"
+echo "stay stale for the hunter to detect): ANALYZE bloat_drill_records; ALTER TABLE"
+echo "bloat_drill_records SET (autovacuum_enabled = true); For persistently skewed"
+echo "columns, also raise the statistics target instead of relying on the default"
+echo "sample size:"
 echo "  ALTER TABLE bloat_drill_records ALTER COLUMN tenant_id SET STATISTICS 1000;"
 echo "  ANALYZE bloat_drill_records;"
 echo ""
-echo "Drill complete. Run 11_cleanup_bloat_drill.sql when finished with this topic's drills."
+ensure_min_duration 90
+echo "Drill complete."

@@ -27,17 +27,12 @@ shared `.env` + non-interactive convention used across `simulations/`.
 
 ## Non-interactive / agent convention
 
-Every drill (`.sh`) prints a safety banner and blocks on a typed `yes` unless
-bypassed with `--yes` / `-y` (as a trailing script argument) or `DRILL_YES=1`
-in `.env`/environment. This is opt-in only — a non-interactive shell does NOT
-skip the prompt on its own, so an agent invoking these via Bash never
-triggers a drill by accident; it must explicitly pass `--yes` or set
-`DRILL_YES=1`. Example agent-safe invocation:
+Every drill (`.sh`) prints a safety banner and fires immediately — no typed
+`yes` confirmation gate. `--yes` / `-y` / `DRILL_YES=1` are still accepted
+(harmlessly) but no longer required. Example invocation:
 
 ```bash
-DRILL_YES=1 ./03_simulate_deadlock.sh 1 2
-# or
-./03_simulate_deadlock.sh 1 2 --yes
+./03_simulate_deadlock.sh 1 2
 ```
 
 ⚠️ **NON-PRODUCTION ONLY.** Every drill runs real blocking/deadlock scenarios
@@ -45,10 +40,13 @@ against the target database. Never point `.env` at a production endpoint.
 
 ## Automated full run
 
-`run_all.sh` runs setup, all 15 drills (02-08, 11-18), the triage sweep (09),
-automated RCA (20), and full cleanup (10) — one command for the whole topic.
-`--list` previews the manifest; `--only`/`--skip` narrow it to specific ids;
-`--fast` (default) / `--full` control hold durations.
+`run_all.sh` runs setup once, then launches all 15 drills (02-08, 11-18)
+CONCURRENTLY (not one at a time) to stack simultaneous lock contention, then
+runs the triage sweep (09) and automated RCA (20) once every drill has
+finished — one command for the whole topic. No cleanup step. `--list`
+previews the manifest; `--only`/`--skip` narrow it to specific ids; `--fast`
+(default) / `--full` control hold durations — every drill still guarantees
+at least a 90s minimum observation window.
 
 ```bash
 ./run_all.sh --list                # preview
@@ -69,7 +67,6 @@ DRILL_YES=1 ./run_all.sh           # fast, full manifest
 | `07_simulate_credits_deadlock.sh` | Multi-module deadlock (buggy vs. fixed lock ordering) | Demonstrate/validate ordered-lock-acquisition fixes. |
 | `08_simulate_mvw_refresh_lock.sh` | Materialized view refresh locking | Blocking vs. `REFRESH ... CONCURRENTLY`, incl. duplicate-row failure mode. |
 | `09_lock_triage_queries.sql` | — | First-response detection sweep (blocking tree, pg_locks, deadlock counter, etc). Run on ANY suspected incident. |
-| `10_cleanup_lock_drill.sql` | — | Full teardown: terminates drill sessions + drops all `lock_test_*` objects. |
 | `11_simulate_idle_in_transaction.sh` | Idle-in-transaction blocker (`pg_cancel_backend` has no effect) | The most insidious real pattern — only `pg_terminate_backend` resolves it. |
 | `12_simulate_long_txn_vacuum_bloat.sh` | Long transaction blocks VACUUM cleanup | Old snapshot (`backend_xmin`) prevents dead-tuple reclamation. |
 | `13_simulate_fk_contention.sh` | FK contention (`child_blocks_parent` / `parent_blocks_child`) | Parent/child DML collide via FK checks, on different tables. |
@@ -78,8 +75,10 @@ DRILL_YES=1 ./run_all.sh           # fast, full manifest
 | `16_simulate_connection_exhaustion.sh` | Connection/idle-in-txn flood (looks like blocking, isn't) | Rule out "it's not actually a lock" before you triage locks. |
 | `17_simulate_workflow_blockage.sh` | Stuck job-queue worker vs. `SKIP LOCKED` | Backup/restore/export worker crashed holding `FOR UPDATE`. |
 | `18_simulate_lock_queue_amplification.sh` | 1 old DML + 1 queuing DDL blocks unrelated DML | High blast-radius incident from FIFO lock queue behavior. |
-| `19_cleanup_drill_sessions.sql` | — | Generic kill-switch: terminates any `drill_*`-tagged session by pattern. |
 | `20_lock_incident_rca.sh` | — | **New**: automated snapshot + classification + blast-radius + RCA report. Safe mode by default; `--remediate-cancel`/`--remediate-terminate` to act. |
+
+No cleanup script is included — drill sessions/tables are left in place
+after a run so the hunters have a real window to detect them.
 
 ## Typical flow for an agent
 
@@ -88,4 +87,3 @@ DRILL_YES=1 ./run_all.sh           # fast, full manifest
 2. Pick the matching `NN_simulate_*.sh` to reproduce the same shape safely on
    a drill instance, if you need to validate a runbook step or train a
    response.
-3. `19_cleanup_drill_sessions.sql` or `10_cleanup_lock_drill.sql` to tear down.

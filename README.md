@@ -16,10 +16,11 @@ a shared, agent-friendly convention:
 - **Credentials via `.env`** — no exported env vars to remember, no
   hardcoded secrets. Copy `.env.example` to `.env` in whatever directory you
   run scripts from and fill it in.
-- **Non-interactive-safe** — every destructive/mutating drill still asks
-  `Type 'yes' to proceed`, but an agent (or CI) can pass `--yes` / set
-  `DRILL_YES=1` to skip the prompt without ever risking an *accidental*
-  auto-run (it's opt-in, not "skip because stdin isn't a TTY").
+- **Aggressive by default** — every drill fires immediately (no typed `yes`
+  confirmation gate, no `--yes` needed), every topic's `run_all.sh` launches
+  its drills concurrently instead of one at a time, and default scale/hold
+  durations are sized to stress the target hard and stay detectable well
+  past any hunter's poll interval.
 - **Claude Code skill-ready** — each topic folder has a `SKILL.md` with
   proper frontmatter (`name`, `description`) so it can be dropped into a
   skills directory (or referenced by an agent via the `Skill`/`Agent` tools)
@@ -28,8 +29,8 @@ a shared, agent-friendly convention:
 ```
 simulations/
 ├── .env.example                                Credential template — copy to .env
-├── _lib/env.sh                                  Shared: loads .env, confirm_drill(), strip_flags()
-├── _lib/runner.sh                               Shared: step()/run_step() manifest runner for run_all.sh scripts
+├── _lib/env.sh                                  Shared: loads .env, confirm_drill() (banner only, no gate), strip_flags()
+├── _lib/runner.sh                               Shared: step()/bg_step()/run_step() manifest runner for run_all.sh scripts
 ├── run_all.sh                                   Runs all 4 topics' run_all.sh in sequence
 ├── 01-connection-exhaustion/                    11 scripts + run_all.sh + SKILL.md + README.md
 ├── 02-locks-deadlocks-blocking-queries/         20 scripts + run_all.sh + SKILL.md + README.md
@@ -65,11 +66,14 @@ invocation time (per `_lib/env.sh`) — run them from `simulations/` itself, or
 ## Automated runs
 
 Each topic folder has a `run_all.sh` that sequences that topic's full
-manifest — setup → every drill → detection → cleanup — behind one command,
-with a pass/fail summary at the end. There's also a top-level `run_all.sh`
-that runs all four topics in sequence (never in parallel — they share the
-same instance, and interleaved drills would make the resulting
-`pg_stat_activity`/log signal unreadable).
+manifest — setup → every drill → detection — behind one command, with a
+pass/fail summary at the end. There's also a top-level `run_all.sh` that
+runs all four topics in sequence (never in parallel — they share the same
+instance, and interleaved drills would make the resulting
+`pg_stat_activity`/log signal unreadable). No topic runs a fix/remediation
+or cleanup step: every drill leaves its issue in place and guarantees at
+least a 20-30s observation window, so the hunters have a real window to
+detect it.
 
 ```bash
 cd simulations
@@ -90,10 +94,10 @@ DRILL_YES=1 ./run_all.sh
 
 Every `run_all.sh` supports `--list` (preview the resolved manifest, run
 nothing), `--fast`/`--full` (scale), `--only`/`--skip` (narrow to specific
-script ids), `--no-cleanup`, and `--yes`/`DRILL_YES=1`. See each script's
-header comment (or its topic's `README.md`/`SKILL.md`) for the full flag
-reference and topic-specific options. Full-run output is logged per-step
-under `run_all_logs/<timestamp>/` at whichever level you invoked it from.
+script ids), and `--yes`/`DRILL_YES=1`. See each script's header comment (or
+its topic's `README.md`/`SKILL.md`) for the full flag reference and
+topic-specific options. Full-run output is logged per-step under
+`run_all_logs/<timestamp>/` at whichever level you invoked it from.
 
 ## Topic index
 
@@ -122,8 +126,13 @@ Topics 3 and 4 are entirely new.
 ## Safety
 
 Every drill script is **non-production only**: it tags its sessions with a
-distinct `application_name` (`drill_*`) for easy identification and cleanup,
-and gates anything that mutates state behind `confirm_drill()` (typed `yes`,
-or explicit `--yes`/`DRILL_YES=1`). Never point `.env` at a production
-endpoint when running a script from this tree. Each topic folder has its own
-cleanup script to remove drill sessions/tables when you're done.
+distinct `application_name` (`drill_*`) for easy identification. `confirm_drill()`
+now only prints a banner — it does **not** block on a typed `yes`; every
+drill fires immediately (`--yes`/`DRILL_YES=1` are still accepted but no
+longer required). Never point `.env` at a production endpoint when running a
+script from this tree. There is no fix/remediation or cleanup script
+anywhere in this tree — every drill leaves its issue in place (sessions
+self-expire on their own after a guaranteed minimum hold, at least 25-90s
+depending on topic) so the hunters have a real window to detect it. Every
+topic's `run_all.sh` also launches its drills concurrently by default to
+stack simultaneous issues instead of running them one at a time.
