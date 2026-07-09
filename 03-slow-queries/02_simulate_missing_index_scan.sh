@@ -42,15 +42,16 @@ echo ""
 echo "--- Sustaining load so the slow-queries hunter can actually observe it ---"
 echo "    A single EXPLAIN above finishes in well under a second and only bumps"
 echo "    seq_scan by 1 — nowhere near what the live hunter needs. duration_seconds"
-echo "    is measured from this statement's query_start, so it only crosses the"
-echo "    hunter's >=30s threshold near the END of the hold — a 180s hold keeps it"
-echo "    over threshold for a full 150s, comfortably wider than the poller's ~27s"
-echo "    tick cadence (vs. only ~5s of margin at the old 35s hold). Also bursts"
-echo "    1500 seq scans (seq_scan_tables, >1000 threshold) so that check fires too."
+echo "    is measured from this statement's query_start, so a 2400s hold clears"
+echo "    not just query_slow's >=30s warning threshold but query_critical's"
+echo "    >=1800s CRITICAL threshold too (actions/slow-queries.jsonc Q-2), with"
+echo "    600s to spare over the hunter's 300s poll interval (>=7 ticks of"
+echo "    overlap — EXTREME margin). Also bursts 200000 seq scans"
+echo "    (seq_scan_tables, >1000 threshold, ratio>0.80) so that check fires hard too."
 hold_session_active "drill_missing_index_scan" \
-    "SELECT * FROM slowq_orders WHERE status = 'failed'" 180
+    "SELECT * FROM slowq_orders WHERE status = 'failed'" 2400
 run_seq_scan_burst "drill_missing_index_scan" \
-    "1 FROM slowq_orders WHERE status = 'failed'" 1500
+    "1 FROM slowq_orders WHERE status = 'failed'" 200000
 wait "${HOLD_PID}" 2>/dev/null || true
 
 echo ""

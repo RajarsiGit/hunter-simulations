@@ -34,10 +34,17 @@
 #   ./16_simulate_connection_exhaustion.sh [mode] [conn_count] [hold_seconds] [--yes]
 #
 # mode: idle_connection_flood (default) | idle_in_txn_flood
-# Defaults: conn_count=20, hold_seconds=90
+# Defaults: conn_count=20, hold_seconds=900
 #
-# Note: Keep conn_count well below max_connections on the drill instance.
-#   A typical RDS db.t3.medium has max_connections=170. Default of 20 is safe.
+# This script isn't gated by any check in THIS hunter
+# (actions/locks-deadlocks-blocking-queries.jsonc has no connections source —
+# that lives in connection-exhaustion.jsonc, see hunter-simulations/01-connection-exhaustion/
+# for the dedicated, much more aggressive drill set). hold_seconds is bumped
+# to 900 only for consistency with this folder's other drills and to survive
+# the SysCloud baseline statement_timeout=5min (runbook §7.3, disabled below).
+# conn_count is left at 20 (not re-tuned here) — keep it well below
+# max_connections on the drill instance; use topic 01's drills for a real
+# connection-exhaustion intensity pass.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -47,7 +54,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 MODE="${1:-idle_connection_flood}"
 CONN_COUNT="${2:-20}"
-HOLD_SECONDS="${3:-90}"
+HOLD_SECONDS="${3:-900}"
 
 if [[ "${MODE}" != "idle_connection_flood" && "${MODE}" != "idle_in_txn_flood" ]]; then
     echo "Usage: $0 [idle_connection_flood|idle_in_txn_flood] [conn_count] [hold_seconds] [--yes]"
@@ -80,11 +87,14 @@ for i in $(seq 1 "${CONN_COUNT}"); do
     if [[ "${MODE}" == "idle_connection_flood" ]]; then
         psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
              -c "SET application_name = 'drill_conn_flood_${i}';
+                 SET statement_timeout = 0;
                  SELECT pg_sleep(${HOLD_SECONDS});" &>/dev/null &
     else
         # idle_in_txn_flood: BEGIN + sleep inside transaction
         psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
              -c "SET application_name = 'drill_conn_flood_${i}';
+                 SET statement_timeout = 0;
+                 SET idle_in_transaction_session_timeout = 0;
                  BEGIN;
                  SELECT pg_sleep(${HOLD_SECONDS});
                  ROLLBACK;" &>/dev/null &

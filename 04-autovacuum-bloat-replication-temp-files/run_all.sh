@@ -4,12 +4,31 @@
 # end-to-end drill run
 # SysCloud DAL Team
 #
-# AGGRESSIVE MODE: setup runs once, then all 9 drills in this folder
+# EXTREME MODE: setup runs once, then all 9 drills in this folder
 # (table/index bloat, autovacuum worker starvation, stale-stats bad plan,
 # temp-file spill x3 modes, CREATE INDEX temp spike, replication-slot WAL
 # retention, replica-lag write surge) launch CONCURRENTLY to stack
 # simultaneous IO/CPU load, then the diagnostic sweep runs once every drill
 # has finished.
+#
+# Real thresholds this manifest is sized against (see each script's own
+# header for the exact query file each was verified against):
+#   T-3/T-4 (slow-queries.jsonc)  table dead_tup_ratio > 0.60 crit / 0.30 warn
+#   AV-1/AV-2 (slow-queries.jsonc) autovacuum_enabled=false (+ dead>0.20 for AV-2)
+#   ST-1/ST-2 (slow-queries.jsonc) never/>7day-stale ANALYZE, n_live_tup>100k
+#   TF-1/TF-2 (this topic's own hunter) temp spill >=1 GiB/h warn / >=25 GiB/h crit
+#   RS-1/RS-2 (slow-queries.jsonc) inactive slot retaining >=1 GiB/>=10 GiB WAL
+#   R-1/R-2   (slow-queries.jsonc) replica replay lag >=100 MiB/>=1 GiB — 10's
+#             drill CANNOT trip this without a real replica attached (REPLICA_PGHOST)
+#
+# Before firing the temp-spill drills (07-sort/07-hash/07-group/08), this
+# script resets ${PGDATABASE}'s stats ONCE and exports SKIP_STATS_RESET=1 so
+# the sub-scripts skip their own individual resets — their concurrent
+# contributions to pg_stat_database.temp_bytes STACK instead of each wiping
+# what its siblings already spilled, which is the only realistic way to
+# threaten TF-2's 25 GiB/h critical floor without any single mode alone
+# needing to spill that much (see 07's header for the full 1h-floor-since-
+# reset mechanic this exploits).
 #
 # No fix/remediation or cleanup step, no confirmation gate: every drill
 # fires immediately and leaves its condition in place (bloat un-vacuumed,
@@ -18,17 +37,21 @@
 # real window to detect them.
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Same rules as every script in this folder.
+# CAVEAT — disk space: --full mode inserts tens of millions of rows across
+# several multi-GB tables PLUS transient temp-file spill PLUS retained WAL
+# on the replication slot (09) that persists indefinitely once created —
+# check FreeStorageSpace/TransactionLogsDiskUsage headroom before running
+# --full on a small drill instance.
 #
 # Usage:
 #   ./run_all.sh [--fast|--full] [--only 04,09] [--skip 07-sort]
 #                [--list] [--yes]
 #
-#   --fast    Smaller row counts (default) — full manifest finishes in a
-#              few minutes. May not reliably reproduce every signal (e.g.
-#              temp-file spill needs enough data to exceed work_mem) — use
-#              --full for a realistic reproduction.
-#   --full    Doc-example row counts (matches README quick-start numbers) —
-#              slower (multi-million-row inserts), closer to a real incident.
+#   --fast    Extreme row counts (default, matches each script's own
+#              extreme-tuned defaults) — full manifest takes several
+#              minutes given the row counts involved.
+#   --full    Even more extreme — multi-million-to-tens-of-millions row
+#              counts, closer to (or past) a real incident's scale.
 #   --only id Only run these ids (comma list) — see id list below.
 #   --skip id Skip these ids.
 #   --list    Print the manifest (with resolved args) and exit.
@@ -73,23 +96,23 @@ done
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-./run_all_logs/$(date +%Y%m%d_%H%M%S 2>/dev/null || echo run)}"
 
 if [[ "${FAST}" -eq 1 ]]; then
-    N03_ROWS=300000; N03_CHURN=30
-    N04_ROWS=300000
-    N05_TABLES=4;    N05_ROWS=500000
-    N06_ROWS=300000
-    N07_SORT=3000000; N07_HASH=1500000; N07_GROUP=3000000
-    N08_ROWS=3000000
-    N09_ROWS=1500000
-    N10_ROWS=1500000
-else
-    N03_ROWS=1000000; N03_CHURN=100
+    N03_ROWS=1000000; N03_CHURN=80
     N04_ROWS=1000000
-    N05_TABLES=5;     N05_ROWS=2000000
+    N05_TABLES=5;    N05_ROWS=3000000
     N06_ROWS=1000000
-    N07_SORT=10000000; N07_HASH=4000000; N07_GROUP=10000000
-    N08_ROWS=10000000
-    N09_ROWS=4000000
-    N10_ROWS=6000000
+    N07_SORT=8000000; N07_HASH=4000000; N07_GROUP=8000000
+    N08_ROWS=8000000
+    N09_ROWS=6000000
+    N10_ROWS=8000000
+else
+    N03_ROWS=3000000; N03_CHURN=150
+    N04_ROWS=3000000
+    N05_TABLES=8;     N05_ROWS=6000000
+    N06_ROWS=3000000
+    N07_SORT=20000000; N07_HASH=10000000; N07_GROUP=20000000
+    N08_ROWS=20000000
+    N09_ROWS=12000000
+    N10_ROWS=15000000
 fi
 
 echo "=== Autovacuum / Bloat / Replication / Temp Files — run_all.sh (${MODE_LABEL}) ==="
@@ -103,6 +126,17 @@ bg_step "03" "Table bloat from UPDATE/DELETE churn"        ./03_simulate_table_b
 bg_step "04" "Index bloat outpaces table bloat"            ./04_simulate_index_bloat.sh "${N04_ROWS}" "${YES_FLAG[@]}"
 bg_step "05" "Autovacuum worker starvation (concurrent vacuum-eligible tables)" ./05_simulate_autovacuum_worker_starvation.sh "${N05_TABLES}" "${N05_ROWS}" "${YES_FLAG[@]}"
 bg_step "06" "Stale statistics → bad plan"                 ./06_simulate_stale_statistics_bad_plan.sh "${N06_ROWS}" "${YES_FLAG[@]}"
+
+if [[ "${LIST_ONLY}" -ne 1 ]]; then
+    echo ""
+    echo "--- Resetting ${PGDATABASE}'s stats ONCE, shared by 07-sort/07-hash/07-group/08 ---"
+    echo "    (see 07's header for the TF-1/TF-2 1h-floor-since-reset mechanic this"
+    echo "    exploits — a shared reset lets their spills stack instead of each"
+    echo "    wiping what its siblings already contributed) ---"
+    psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -c "SELECT pg_stat_reset();"
+fi
+export SKIP_STATS_RESET=1
+
 bg_step "07-sort" "Temp-file spill: sort"                  ./07_simulate_temp_file_spill.sh sort "${N07_SORT}" "${YES_FLAG[@]}"
 bg_step "07-hash" "Temp-file spill: hash join"              ./07_simulate_temp_file_spill.sh hash_join "${N07_HASH}" "${YES_FLAG[@]}"
 bg_step "07-group" "Temp-file spill: hash aggregate"        ./07_simulate_temp_file_spill.sh group_by "${N07_GROUP}" "${YES_FLAG[@]}"

@@ -10,24 +10,37 @@
 #         (Scenario B1 write-surge lag, Scenario B2 long replica query
 #         delays replay).
 #
-# LIMITATION: fully observing replica lag requires an actual RDS read
-# replica to point REPLICA_PGHOST/REPLICA_PGPORT at. Without one, this
-# script still performs the primary-side write-surge simulation and the
-# primary-side pg_stat_replication detection query (useful on its own if you
-# already have a replica attached to this instance) — it just can't show you
-# the replica-side replay_delay/query-cancellation half of the picture.
-# Set REPLICA_PGHOST (and optionally REPLICA_PGUSER/REPLICA_PGDATABASE, which
-# default to PGUSER/PGDATABASE) to enable the replica-side checks.
+# Detectability — verified against queries/slow-queries/slow-queries-
+# replica-lag.sql (thresholds live in the slow-queries hunter, actions/
+# slow-queries.jsonc):
+#   R-1 replica_lag_warning  warning  — replay_lag_bytes (sent_lsn - replay_lsn) >= 100 MiB
+#   R-2 replica_lag_critical critical — replay_lag_bytes >= 1 GiB
+#
+# STRUCTURAL LIMITATION (no amount of ROW_COUNT fixes this): pg_stat_replication
+# on the primary returns ZERO ROWS unless a replica is actively streaming
+# (state = 'streaming' in the query's WHERE clause) — R-1/R-2 can then never
+# fire, full stop, regardless of how large a write surge this script
+# generates. This is the same class of structural blocker as an unpolled
+# host in host_discovery: intensity cannot substitute for the missing
+# replica. Set REPLICA_PGHOST (and optionally REPLICA_PGUSER/
+# REPLICA_PGDATABASE, which default to PGUSER/PGDATABASE) to an actual RDS
+# read replica attached to this instance to make this drill capable of
+# firing R-1/R-2 at all; without one this only exercises the primary-side
+# write-surge simulation and detection query for local troubleshooting.
 #
 # Usage:
 #   ./10_simulate_replica_lag_write_surge.sh [row_count] [--yes]
-#   REPLICA_PGHOST=<read-replica-endpoint> ./10_simulate_replica_lag_write_surge.sh 3000000
+#   REPLICA_PGHOST=<read-replica-endpoint> ./10_simulate_replica_lag_write_surge.sh 8000000
+#
+# Default row_count=8000000 (was 3000000) — bigger write surge for a better
+# shot at clearing R-2's 1 GiB critical floor IF a replica is attached; has
+# no effect on whether R-1/R-2 can fire at all (see LIMITATION above).
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-3000000}"
+ROW_COUNT="${1:-8000000}"
 REPLICA_PGHOST="${REPLICA_PGHOST:-}"
 REPLICA_PGUSER="${REPLICA_PGUSER:-${PGUSER}}"
 REPLICA_PGDATABASE="${REPLICA_PGDATABASE:-${PGDATABASE}}"

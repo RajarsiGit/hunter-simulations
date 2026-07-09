@@ -17,18 +17,40 @@
 # thresholds and instance load, which this script cannot force deterministically,
 # so treat this as a contention *approximation*, not a byte-for-byte reproduction.
 #
+# Detectability — IMPORTANT correction verified against queries/slow-queries/
+# slow-queries.sql: this script's own worker-contention scenario has no
+# dedicated hunter check (autovacuum_stuck / Q-3 in actions/slow-queries.jsonc
+# requires row.query_type == 'autovacuum', which the classifier derives from
+# `query ILIKE 'autovacuum:%'` — a MANUAL `VACUUM (ANALYZE) ...` statement,
+# which is what this script runs, never matches that pattern and is
+# classified query_type == 'user' instead). The practical consequence: if
+# ROWS_PER_TABLE is large enough that a manual VACUUM genuinely takes a
+# while, it instead trips the ordinary slow-query checks —
+#   Q-1 query_slow     warning  — user query active >= 30s
+#   Q-2 query_critical critical — user query active >= 1800s (30 min)
+# — on the VACUUM statement itself, not autovacuum_stuck. Sized up so the
+# concurrent manual VACUUMs plausibly clear Q-1's 30s floor on a small
+# instance; hitting Q-2's 1800s floor would need considerably more data or a
+# much slower disk than a typical drill box, so treat Q-1 as the realistic
+# target here, not Q-2.
+#
 # Usage:
 #   ./05_simulate_autovacuum_worker_starvation.sh [table_count] [rows_per_table] [--yes]
 #
-# Example: 3 tables, 1M rows each
-#   ./05_simulate_autovacuum_worker_starvation.sh 3 1000000
+# Defaults: table_count=5, rows_per_table=3000000 (was 3 / 1000000) — bigger
+# and more of them, so the concurrent VACUUMs both contend longer in
+# pg_stat_progress_vacuum and have a realistic shot at crossing query_slow's
+# 30s floor.
+#
+# Example: 5 tables, 3M rows each
+#   ./05_simulate_autovacuum_worker_starvation.sh 5 3000000
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-TABLE_COUNT="${1:-3}"
-ROWS_PER_TABLE="${2:-1000000}"
+TABLE_COUNT="${1:-5}"
+ROWS_PER_TABLE="${2:-3000000}"
 
 confirm_drill "This creates ${TABLE_COUNT} large tables (${ROWS_PER_TABLE} rows each, av_starvation_drill_N), churns each with updates, then fires concurrent VACUUM (ANALYZE) against all of them to show worker contention in pg_stat_progress_vacuum." "$@"
 

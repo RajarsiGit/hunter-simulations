@@ -24,6 +24,22 @@
 # Usage:
 #   ./11_simulate_pgbouncer_session_pool_pinning.sh [pool_size] [hold_seconds] [--yes]
 #
+# Defaults: pool_size=20, hold_seconds=2400 (extreme — see actions/
+# connection-exhaustion.jsonc PB-ps-1/PB-ps-2: maxwait>=30s warning /
+# >=120s critical for a client queued behind a pinned session-mode pool.
+# 2400s holds the pool pinned 20x past the critical threshold and gives ~8
+# ticks of overlap with the hunter's 300s poll interval, vs. the previous
+# 180s default which barely cleared the 120s critical mark at all.
+#
+# IMPORTANT: pool_size here should match (or exceed) the TARGET's actual
+# configured default_pool_size for pool_mode=session — pinning fewer
+# sessions than the real pool size leaves headroom and won't reproduce
+# anything; pinning far more than it doesn't make the demonstration more
+# "extreme", it just opens extra clients that queue behind the real ceiling
+# for no added signal. Confirm the real value first via trans-db-router
+# query_pgbouncer(host, "SHOW CONFIG") or pgbouncer.ini before overriding
+# this default with arg 1.
+#
 # Example: pin a pool of 5, hold for 3 minutes, then probe the 6th client
 #   ./11_simulate_pgbouncer_session_pool_pinning.sh 5 180 --yes
 # =============================================================================
@@ -32,8 +48,8 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
-POOL_SIZE="${ARGS[0]:-5}"
-HOLD_SECONDS="${ARGS[1]:-180}"
+POOL_SIZE="${ARGS[0]:-20}"
+HOLD_SECONDS="${ARGS[1]:-2400}"
 
 echo "=== DRILL: PgBouncer Session-Mode Pool Pinning Simulator ==="
 echo "Target (via PgBouncer): ${PGBOUNCER_HOST}:${PGBOUNCER_PORT}/${PGDATABASE}"

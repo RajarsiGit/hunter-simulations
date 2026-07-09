@@ -80,12 +80,19 @@ echo ""
 echo "--- Session A: REFRESH MATERIALIZED VIEW${MODE:+ }${MODE/blocking/}${MODE/concurrent/ CONCURRENTLY} ---"
 
 if [[ "${MODE}" == "blocking" ]]; then
-    # Blocking refresh: holds AccessExclusiveLock for 600 s via pg_sleep before COMMIT
+    # Blocking refresh: holds AccessExclusiveLock for 900s via pg_sleep before
+    # COMMIT — bumped from 600s to clear the hunter's 300s poll interval
+    # (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap,
+    # so DC-1 ddl_blocking_detected reliably samples Session B waiting.
+    # statement_timeout=0 disables the SysCloud baseline 5min statement_timeout
+    # (runbook §7.3) for this session only, so the 900s hold isn't cut short.
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_mvw_refresh';
+             SET statement_timeout = 0;
+             SET idle_in_transaction_session_timeout = 0;
              BEGIN;
              REFRESH MATERIALIZED VIEW lock_test_mvw;
-             SELECT pg_sleep(600);
+             SELECT pg_sleep(900);
              COMMIT;" \
          2>&1 | sed 's#^#  [Session A / refresh] #' &
 else
@@ -106,6 +113,8 @@ echo "    Concurrent mode: will return stale data immediately (no AccessExclusiv
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_mvw_reader';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          SELECT category, total_amount, row_count FROM lock_test_mvw ORDER BY category;" \
      2>&1 | sed 's#^#  [Session B / reader] #' &
 READER_PID=$!

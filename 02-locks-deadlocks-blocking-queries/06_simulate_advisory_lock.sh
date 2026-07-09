@@ -26,7 +26,12 @@
 # Usage:
 #   ./06_simulate_advisory_lock.sh [lock_key] [hold_seconds] [--yes]
 #
-# Defaults: lock_key=99999, hold_seconds=90
+# Defaults: lock_key=99999, hold_seconds=900 — clears the hunter's 300s poll
+# interval (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of
+# overlap so AL-1 advisory_lock_blocking (waiter_count>=1) is reliably
+# sampled. CEILING WARNING: SysCloud baseline lock_timeout=10s/statement_timeout=5min
+# (runbook §7.3) would otherwise abort Session B's blocking pg_advisory_lock()
+# call almost immediately — disabled below for these sessions only.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -35,7 +40,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 LOCK_KEY="${1:-99999}"
-HOLD_SECONDS="${2:-90}"
+HOLD_SECONDS="${2:-900}"
 
 echo "=== DRILL: Advisory Lock Contention ==="
 echo "Target    : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -51,6 +56,8 @@ echo "--- Session A: acquiring pg_advisory_lock(${LOCK_KEY}) for ${HOLD_SECONDS}
 # and must be explicitly released with pg_advisory_unlock.
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_advisory_holder';
+         SET statement_timeout = 0;
+         SET idle_in_transaction_session_timeout = 0;
          SELECT pg_advisory_lock(${LOCK_KEY});
          SELECT pg_sleep(${HOLD_SECONDS});
          SELECT pg_advisory_unlock(${LOCK_KEY});" \
@@ -67,6 +74,8 @@ echo "--- Session B: pg_advisory_lock(${LOCK_KEY}) — will block on Session A -
 # This is the common production anti-pattern: blocking callers accumulate.
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_advisory_waiter';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          SELECT pg_advisory_lock(${LOCK_KEY});
          SELECT pg_advisory_unlock(${LOCK_KEY});" \
      2>&1 | sed 's#^#  [Session B / waiter] #' &

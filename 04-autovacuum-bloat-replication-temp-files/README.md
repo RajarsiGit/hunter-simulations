@@ -48,6 +48,42 @@ un-dropped), guaranteeing at least a 90s observation window, so the hunters
 have a real window to detect them. `run_all.sh` also launches all 9 drills
 concurrently by default to stack simultaneous IO/CPU load.
 
+## Detectability by the live hunters
+
+Every mutating drill was checked against the actual hunter definitions
+(`C:\SysCloud\Production\AI-Hunters\actions\slow-queries.jsonc` and
+`actions\autovacuum-bloat-replication-temp-files.jsonc`, plus their
+`queries\*.sql` files) rather than assumed — table/index bloat, autovacuum-
+disabled, and stale-stats checks all live in the **slow-queries** hunter, not
+this topic's own hunter, which only owns temp-file-spill + config-hygiene:
+
+| Script | Check(s) | Threshold |
+|---|---|---|
+| `03`, `04` | T-3/T-4 `table_critical_bloat`/`table_high_bloat` | dead_tup_ratio > 0.60 crit / 0.30 warn, total_tuples > 10000 |
+| `03`, `04` | AV-1/AV-2 `autovacuum_disabled`(_bloated) | autovacuum_enabled=false (+ dead_tup_ratio > 0.20 for AV-2) |
+| `06` | ST-1/ST-2 `stats_never_analyzed`/`stats_stale` | n_live_tup > 100000, ANALYZE never run or > 7 days stale |
+| `07`, `08` | TF-1/TF-2 `temp_spill_warning`/`_critical` (this topic's hunter) | temp_bytes_per_hour >= 1 GiB warn / >= 25 GiB crit |
+| `09` | RS-1/RS-2 `slot_lag_warning`/`_critical` | inactive slot retaining >= 1 GiB / >= 10 GiB WAL |
+| `10` | R-1/R-2 `replica_lag_warning`/`_critical` | replay lag >= 100 MiB / >= 1 GiB — **needs a real attached replica; cannot fire otherwise, at any row count** |
+| `05` | none directly — see script header | manual VACUUM is query_type='user', not 'autovacuum', so a big enough one trips Q-1/Q-2 (`query_slow`/`query_critical`, >=30s/>=1800s) instead of `autovacuum_stuck` |
+
+Gaps — real checks this folder's scripts do **not** exercise (noted here so
+nobody assumes coverage that isn't there): **QC-1** `temp_concurrency_storm`
+(>=20 concurrent sessions running the identical spill-prone query) has no
+script targeting it — 07/08 each run one query per invocation, not a fan-out
+of concurrent identical ones. **CH-1..CH-5** (config-hygiene: `log_temp_files`,
+`temp_file_limit`, `pg_stat_statements` presence, activity-snapshot mechanism,
+role-level `temp_file_limit`) are static RDS-parameter-group/extension checks,
+not something a load-generating drill can toggle.
+
+`07`/`08` exploit a specific mechanic in the temp-spill rate calculation: it's
+`temp_bytes` (cumulative since `stats_reset`) divided by hours-since-reset,
+floored at 1h — so resetting stats immediately before spilling pins the
+denominator at 1.0 for the first hour, making the rate equal the raw bytes
+spilled. `run_all.sh` resets once, shared across all four temp-spill
+sub-drills, so their spills stack toward the 25 GiB/h critical floor instead
+of each resetting away what its siblings already contributed.
+
 **Not independently scripted (diagnostic-only / needs infrastructure a single script
 can't provision):**
 - **Transaction ID wraparound** — forcing genuine wraparound needs billions of real
@@ -79,7 +115,7 @@ DRILL_YES=1 ./run_all.sh
 # Skip the two slower temp-spill sub-modes
 ./run_all.sh --skip 07-hash,07-group --yes
 
-# Doc-example scale (multi-million-row inserts, closer to a real incident)
+# Even more extreme scale (tens-of-millions-row inserts, closer to or past a real incident)
 ./run_all.sh --full --yes
 ```
 
@@ -91,31 +127,34 @@ psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
      -f 02_bloat_vacuum_diagnostic_sweep.sql
 
 # Drill A — table bloat from update churn (agent-friendly non-interactive run)
-./03_simulate_table_bloat_update_churn.sh 500000 50 --yes
+./03_simulate_table_bloat_update_churn.sh 1000000 80 --yes
 
 # Drill B — index bloat
-DRILL_YES=1 ./04_simulate_index_bloat.sh 500000
+DRILL_YES=1 ./04_simulate_index_bloat.sh 1000000
 
-# Drill C — autovacuum worker starvation across 3 tables
-./05_simulate_autovacuum_worker_starvation.sh 3 1000000 --yes
+# Drill C — autovacuum worker starvation across 5 tables
+./05_simulate_autovacuum_worker_starvation.sh 5 3000000 --yes
 
 # Drill D — stale statistics causing a bad plan
-./06_simulate_stale_statistics_bad_plan.sh 500000 --yes
+./06_simulate_stale_statistics_bad_plan.sh 1000000 --yes
 
-# Drill E — temp file spill, three modes
-./07_simulate_temp_file_spill.sh sort 5000000 --yes
-./07_simulate_temp_file_spill.sh hash_join 2000000 --yes
-./07_simulate_temp_file_spill.sh group_by 5000000 --yes
+# Drill E — temp file spill, three modes (each resets stats itself when run
+# standalone like this — see script header; set SKIP_STATS_RESET=1 if you
+# want their spills to stack instead)
+./07_simulate_temp_file_spill.sh sort 8000000 --yes
+./07_simulate_temp_file_spill.sh hash_join 4000000 --yes
+./07_simulate_temp_file_spill.sh group_by 8000000 --yes
 
 # Drill F — CREATE INDEX temp spike
-./08_simulate_create_index_temp_spike.sh 5000000 --yes
+./08_simulate_create_index_temp_spike.sh 8000000 --yes
 
-# Drill G — inactive replication slot retains WAL
-./09_simulate_replication_slot_wal_retention.sh 2000000 --yes
+# Drill G — inactive replication slot retains WAL (check disk headroom first — see script header)
+./09_simulate_replication_slot_wal_retention.sh 6000000 --yes
 
-# Drill H — write-surge replica lag (primary-only, or full with a real replica)
-./10_simulate_replica_lag_write_surge.sh 3000000 --yes
-REPLICA_PGHOST=<read-replica-endpoint> ./10_simulate_replica_lag_write_surge.sh 3000000 --yes
+# Drill H — write-surge replica lag (primary-only, or full with a real replica —
+# R-1/R-2 CANNOT fire without REPLICA_PGHOST pointed at a real attached replica)
+./10_simulate_replica_lag_write_surge.sh 8000000 --yes
+REPLICA_PGHOST=<read-replica-endpoint> ./10_simulate_replica_lag_write_surge.sh 8000000 --yes
 ```
 
 ## Conventions

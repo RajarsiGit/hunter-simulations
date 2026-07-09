@@ -14,20 +14,43 @@
 # can itself spend temp files / maintenance_work_mem during the sort phase
 # of the index build. Shows pg_stat_progress_create_index while it runs.
 #
+# Detectability — same TF-1/TF-2 signal as 07 (verified against queries/
+# autovacuum-bloat-replication-temp-files/temp-usage.sql, thresholds in
+# actions/autovacuum-bloat-replication-temp-files.jsonc): a low
+# maintenance_work_mem relative to ROW_COUNT makes the index build's sort
+# phase spill, adding to this database's cumulative pg_stat_database.
+# temp_bytes just like 07's queries do. Same TF-1 (>=1 GiB/h) / TF-2
+# (>=25 GiB/h) thresholds, same 1h-floor-since-reset mechanic — see 07's
+# header for the full mechanic explanation. SKIP_STATS_RESET=1 applies here
+# too, for the same reason (stacking with 07 under run_all.sh).
+#
 # Usage:
 #   ./08_simulate_create_index_temp_spike.sh [row_count] [--yes]
+#
+# Default row_count=8000000 (was 5000000), matching 07's sort/group_by scale.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-5000000}"
+ROW_COUNT="${1:-8000000}"
 
 confirm_drill "This creates temp_spill_sort_drill if missing (${ROW_COUNT} rows) and builds a non-concurrent index on its payload column, monitoring pg_stat_progress_create_index." "$@"
 
 echo ""
 echo "=== DRILL: CREATE INDEX Causes Temp Spike (Investigation Guide §5.8 / Scenario C4) ==="
 echo "Target: ${PGHOST}:${PGPORT}/${PGDATABASE} | rows=${ROW_COUNT}"
+
+if [[ -z "${SKIP_STATS_RESET:-}" ]]; then
+    echo ""
+    echo "--- Resetting ${PGDATABASE}'s stats (see 07's header for the TF-1/TF-2"
+    echo "    1h-floor-since-reset mechanic this exploits) ---"
+    psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
+         -c "SELECT pg_stat_reset();"
+else
+    echo ""
+    echo "--- Skipping stats reset (SKIP_STATS_RESET=1) — run_all.sh already reset once ---"
+fi
 
 echo ""
 echo "--- Ensuring temp_spill_sort_drill exists ---"

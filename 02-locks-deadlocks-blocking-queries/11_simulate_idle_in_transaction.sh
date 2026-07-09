@@ -33,9 +33,44 @@
 #   - pg_terminate_backend(A_pid) → A exits, B unblocks immediately
 #
 # Usage:
-#   ./11_simulate_idle_in_transaction.sh [row_id] [idle_seconds] [--yes]
+#   ./11_simulate_idle_in_transaction.sh [row_id] [idle_seconds] [blocker_count] [--yes]
 #
-# Defaults: row_id=3, idle_seconds=120
+# Defaults: row_id=3, idle_seconds=900, blocker_count=5
+#
+# idle_seconds=900 clears TWO real thresholds from
+# actions/locks-deadlocks-blocking-queries.jsonc with wide margin: the 300s
+# poll interval (3 ticks of overlap) AND LB-3 idle_in_transaction_critical's
+# blocker_idle_age_seconds >= 300s (600s margin).
+#
+# blocker_count=5 is new: this drill now opens FIVE independent idle-in-txn
+# sessions (on rows id=1..5 of lock_test_accounts, which 01_setup seeds with
+# exactly 5 rows) instead of one, so the cluster-wide lock_health source
+# (queries/locks-deadlocks-blocking-queries/lock-health.sql) counts
+# idle_txn_over_5min >= 3 — clearing LH-1 idle_txn_accumulation's >=3
+# threshold with 2 sessions of margin. Only the FIRST blocker (row_id, the
+# script's own arg) also gets a Session B waiter attached, so this single
+# drill run exercises LB-3 (idle-in-txn blocker + waiter) and LH-1
+# (idle-in-txn accumulation) simultaneously.
+#
+# MECHANISM FIX (was broken before this pass): the original implementation
+# ran "BEGIN; UPDATE ...; SELECT pg_sleep(N); ROLLBACK;" as ONE psql -c
+# string. PostgreSQL's simple-query protocol executes an entire multi-statement
+# string as one continuous message — the backend never returns control to
+# wait for the client in between, so state stays 'active' (wait_event=
+# 'PgSleep') for the WHOLE duration, never 'idle in transaction', no matter
+# how long IDLE_SECONDS is. This silently meant LB-3/LH-1 could never fire
+# from this script despite its name and its own inline comments claiming
+# otherwise. Fixed by splitting into two round trips: BEGIN+UPDATE first,
+# THEN a genuine client-side pause via the psql \! meta-command (shells out
+# locally, sends nothing to the server) before the final ROLLBACK — during
+# that gap the server has no next command to run, so pg_stat_activity
+# reports real state='idle in transaction' for the whole idle_seconds window.
+#
+# CEILING WARNING: SysCloud baseline (runbook §7.3) is
+# idle_in_transaction_session_timeout=60s and lock_timeout=10s. Every
+# session below explicitly disables both (plus statement_timeout) for its
+# own connection — without that, the blockers get killed by the server at
+# 60s and the waiter aborts at 10s, regardless of idle_seconds.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -44,46 +79,48 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 ROW_ID="${1:-3}"
-IDLE_SECONDS="${2:-120}"
+IDLE_SECONDS="${2:-900}"
+BLOCKER_COUNT="${3:-5}"
 
 echo "=== DRILL: Idle-in-Transaction Blocking ==="
-echo "Target       : ${PGHOST}:${PGPORT}/${PGDATABASE}"
-echo "Row ID       : ${ROW_ID}"
-echo "Idle hold    : ${IDLE_SECONDS}s (Session A will sit idle-in-transaction)"
+echo "Target        : ${PGHOST}:${PGPORT}/${PGDATABASE}"
+echo "Row ID        : ${ROW_ID} (gets the Session B waiter too)"
+echo "Idle hold     : ${IDLE_SECONDS}s (all blockers sit genuinely idle-in-transaction)"
+echo "Blocker count : ${BLOCKER_COUNT} (rows 1..${BLOCKER_COUNT} of lock_test_accounts) — feeds LH-1 idle_txn_accumulation (>=3)"
 echo ""
 echo "⚠️  Requires lock_test_accounts (run 01_setup_lock_drill_tables.sql first)."
-confirm_drill "Parks Session A idle-in-transaction on row id=${ROW_ID} for ${IDLE_SECONDS}s while Session B blocks." "$@"
+confirm_drill "Parks ${BLOCKER_COUNT} sessions genuinely idle-in-transaction (one per row) for ${IDLE_SECONDS}s; row id=${ROW_ID}'s blocker also gets a Session B waiter." "$@"
 
 echo ""
-echo "--- Session A: UPDATE then sit idle-in-transaction for ${IDLE_SECONDS}s ---"
+echo "--- Spawning ${BLOCKER_COUNT} idle-in-transaction blockers (rows 1..${BLOCKER_COUNT}) ---"
 echo "    (simulates an app that forgot to commit, or is waiting on external I/O)"
 
-# Session A: runs the UPDATE, then idles in-transaction for IDLE_SECONDS.
-# The outer shell sleep keeps the psql connection open in idle-in-transaction
-# state. This is the key difference from script 02 where pg_sleep runs inside
-# the transaction (which shows state='active').
-#
-# Implementation: we open a connection that sends BEGIN + UPDATE, then uses
-# a second pg_sleep call AFTER the UPDATE but still INSIDE the transaction.
-# From pg_stat_activity this looks like idle-in-transaction because the UPDATE
-# has completed and we are in between statements.
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-     -c "SET application_name = 'drill_idle_txn_blocker';
-         BEGIN;
-         UPDATE lock_test_accounts SET status = 'REVIEW' WHERE id = ${ROW_ID};
-         SELECT pg_sleep(${IDLE_SECONDS});
-         ROLLBACK;" &
-BLOCKER_PID=$!
-echo "  Session A spawned (shell pid ${BLOCKER_PID})"
-echo "  After ~1s it will show: state='idle in transaction' in pg_stat_activity"
+BLOCKER_PIDS=()
+for b in $(seq 1 "${BLOCKER_COUNT}"); do
+    psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" <<SQL_BLOCKER &
+SET application_name = 'drill_idle_txn_blocker_${b}';
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+BEGIN;
+UPDATE lock_test_accounts SET status = 'REVIEW' WHERE id = ${b};
+\! sleep ${IDLE_SECONDS}
+ROLLBACK;
+SQL_BLOCKER
+    BLOCKER_PIDS+=($!)
+done
+echo "  Spawned ${#BLOCKER_PIDS[@]} blockers (shell pids: ${BLOCKER_PIDS[*]})"
+echo "  Each will show genuine state='idle in transaction' in pg_stat_activity within ~1s"
 
 sleep 3
 
 echo ""
-echo "--- Session B: UPDATE same row → will block on Session A's RowExclusiveLock ---"
+echo "--- Session B: UPDATE row id=${ROW_ID} → will block on that row's idle-in-txn blocker ---"
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_idle_txn_waiter';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          BEGIN;
          UPDATE lock_test_accounts SET status = 'ACTIVE' WHERE id = ${ROW_ID};
          ROLLBACK;" &
@@ -105,8 +142,8 @@ echo "  -- Demonstrate pg_cancel_backend has NO effect (key lesson):"
 echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
 echo "    -c \"SELECT pg_cancel_backend(pid), pid, state, application_name"
 echo "         FROM  pg_stat_activity"
-echo "         WHERE application_name = 'drill_idle_txn_blocker';\""
-echo "  -- Then re-run the triage query above — Session A is still there."
+echo "         WHERE application_name LIKE 'drill_idle_txn_blocker%';\""
+echo "  -- Then re-run the triage query above — the blockers are still there."
 echo ""
 echo "  -- Full blocking tree (09_lock_triage_queries.sql §2):"
 echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
@@ -116,7 +153,7 @@ echo "  -- Resolve: pg_terminate_backend (only option for idle-in-transaction):"
 echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
 echo "    -c \"SELECT pg_terminate_backend(pid)"
 echo "         FROM  pg_stat_activity"
-echo "         WHERE application_name = 'drill_idle_txn_blocker';\""
+echo "         WHERE application_name LIKE 'drill_idle_txn_blocker%';\""
 echo ""
 echo "Prevention (set in RDS parameter group):"
 echo "  idle_in_transaction_session_timeout = '5min'"

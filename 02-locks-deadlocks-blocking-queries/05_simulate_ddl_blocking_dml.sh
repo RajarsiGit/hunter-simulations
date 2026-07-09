@@ -28,7 +28,15 @@
 # Usage:
 #   ./05_simulate_ddl_blocking_dml.sh [dml_hold_seconds] [--yes]
 #
-# Default: dml_hold_seconds=45
+# Default: dml_hold_seconds=900 — clears the hunter's 300s poll interval
+# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap so
+# DC-1 ddl_blocking_detected is reliably sampled while Session B (the queued
+# CREATE INDEX) is waiting.
+#
+# CEILING WARNING: at the SysCloud baseline (runbook §7.3: lock_timeout=10s,
+# statement_timeout=5min) Session B/C below would abort while queued long
+# before this hold matters — both disable lock_timeout/statement_timeout for
+# their own connection.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -36,7 +44,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-DML_HOLD="${1:-45}"   # How long Session A's UPDATE holds the lock
+DML_HOLD="${1:-900}"   # How long Session A's UPDATE holds the lock
 
 echo "=== DRILL: DDL Blocking DML Cascade ==="
 echo "Target          : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -56,6 +64,8 @@ echo "--- Session A (t=0): long-running UPDATE, holds RowExclusiveLock for ${DML
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_ddl_dml_session_a';
+         SET statement_timeout = 0;
+         SET idle_in_transaction_session_timeout = 0;
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 1 WHERE id = 1;
          SELECT pg_sleep(${DML_HOLD});
@@ -72,6 +82,8 @@ echo "    Once A releases, B acquires ShareLock and blocks ALL subsequent DML."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_ddl_dml_session_b';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          CREATE INDEX idx_drill_balance ON lock_test_accounts(balance);" \
      2>&1 | sed 's#^#  [Session B / DDL] #' &
 PID_B=$!
@@ -85,6 +97,8 @@ echo "    Demonstrates: unrelated DML is blocked the moment DDL is queuing."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_ddl_dml_session_c';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 5 WHERE id = 2;
          ROLLBACK;" \

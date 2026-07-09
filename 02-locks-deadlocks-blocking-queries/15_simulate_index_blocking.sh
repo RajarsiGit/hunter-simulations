@@ -29,7 +29,22 @@
 # Usage:
 #   ./15_simulate_index_blocking.sh [dml_hold_seconds] [--yes]
 #
-# Default: dml_hold_seconds=60
+# Default: dml_hold_seconds=900 — clears the hunter's 300s poll interval
+# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap so
+# DC-1 ddl_blocking_detected is reliably sampled while Session A holds the
+# lock Session B's CREATE INDEX is queued behind.
+#
+# COVERAGE GAP once A releases: CREATE INDEX on lock_test_accounts (5 rows,
+# 01_setup_lock_drill_tables.sql) then completes in milliseconds, so the
+# window where B itself HOLDS its ShareLock (blocking C) is far too short to
+# ever be sampled by a 300s poll — only the "queued behind A" phase above is
+# reliably observable. Same underlying limitation as 14's VACUUM FULL mode;
+# not fixed here since lock_test_accounts is shared by ~10 other drills that
+# need it to stay small and fast.
+#
+# CEILING WARNING: SysCloud baseline (runbook §7.3) lock_timeout=10s /
+# statement_timeout=5min would otherwise abort Sessions B/C almost
+# immediately and cut Session A's hold at 300s — all disabled below.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -37,7 +52,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-DML_HOLD="${1:-60}"
+DML_HOLD="${1:-900}"
 
 echo "=== DRILL: Index Operation Blocking ==="
 echo "Target          : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -57,6 +72,8 @@ echo "--- Session A (t=0): long UPDATE — holds RowExclusiveLock for ${DML_HOLD
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_index_blocking_dml_a';
+         SET statement_timeout = 0;
+         SET idle_in_transaction_session_timeout = 0;
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 1 WHERE id = 1;
          SELECT pg_sleep(${DML_HOLD});
@@ -73,6 +90,8 @@ echo "    ShareLock required. Once A finishes, B blocks ALL subsequent DML."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_index_blocking_ddl_b';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          CREATE INDEX idx_drill_index_blocking_balance
          ON lock_test_accounts(balance);" \
      2>&1 | sed 's#^#  [Session B / CREATE INDEX] #' &
@@ -87,6 +106,8 @@ echo "    Demonstrates: unrelated DML queues behind a pending DDL lock request."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_index_blocking_dml_c';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          BEGIN;
          INSERT INTO lock_test_accounts (id, name, balance)
          VALUES (99, 'Drill-Insert', 0.00)

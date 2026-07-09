@@ -33,6 +33,20 @@
 #   ./14_simulate_vacuum_full_blocking.sh [mode] [--yes]
 #
 # mode: vacuum_full_blocks_dml (default) | long_txn_blocks_vacuum
+#
+# COVERAGE GAP (left as-is, not fixed by this pass): mode A's AccessExclusiveLock
+# is only held for as long as VACUUM FULL actually takes, and lock_test_accounts
+# has only 5 rows (01_setup_lock_drill_tables.sql) — VACUUM FULL on a table
+# that small completes in milliseconds regardless of the few dead tuples
+# created below. That's nowhere near the hunter's 300s poll interval
+# (actions/locks-deadlocks-blocking-queries.jsonc), so DC-1 ddl_blocking_detected
+# will rarely if ever be sampled while this mode's lock is actually held.
+# Making this reliably detectable needs a much larger/bloated table (the same
+# fix slow-queries applied — seed millions of rows) — out of scope here since
+# lock_test_accounts is shared by ~10 other quick drills in this folder that
+# depend on it staying small and fast. If you need DC-1 coverage from VACUUM
+# FULL specifically, point this at a large table instead. Timeout overrides
+# below are still applied so waiters don't error out before observing it.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -75,6 +89,7 @@ if [[ "${MODE}" == "vacuum_full_blocks_dml" ]]; then
     echo "--- Session A: VACUUM FULL ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_vacuum_full';
+             SET statement_timeout = 0;
              VACUUM FULL lock_test_accounts;" \
          2>&1 | sed 's#^#  [Session A / VACUUM FULL] #' &
     VACUUM_PID=$!
@@ -86,6 +101,8 @@ if [[ "${MODE}" == "vacuum_full_blocks_dml" ]]; then
     echo "--- Session B: SELECT on lock_test_accounts — will block ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_vacuum_full_reader';
+             SET statement_timeout = 0;
+             SET lock_timeout = 0;
              SELECT count(*) FROM lock_test_accounts;" \
          2>&1 | sed 's#^#  [Session B / reader] #' &
     READER_PID=$!
@@ -97,6 +114,8 @@ if [[ "${MODE}" == "vacuum_full_blocks_dml" ]]; then
     echo "--- Session C: UPDATE on lock_test_accounts — will also block ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_vacuum_full_writer';
+             SET statement_timeout = 0;
+             SET lock_timeout = 0;
              BEGIN;
              UPDATE lock_test_accounts SET balance = balance + 99 WHERE id = 1;
              ROLLBACK;" \
@@ -147,12 +166,15 @@ else
     echo "--- Session A: long-running transaction (holds old snapshot) ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_vacuum_txn_blocker';
+             SET statement_timeout = 0;
+             SET idle_in_transaction_session_timeout = 0;
              BEGIN ISOLATION LEVEL REPEATABLE READ;
              SELECT count(*) FROM lock_test_accounts;
-             SELECT pg_sleep(120);
+             SELECT pg_sleep(900);
              ROLLBACK;" &
     HOLDER_PID=$!
-    echo "  Session A spawned (shell pid ${HOLDER_PID}) — holds old snapshot"
+    echo "  Session A spawned (shell pid ${HOLDER_PID}) — holds old snapshot (900s — not gated by"
+    echo "  a check in THIS hunter, bumped only for consistency with the folder's other drills)"
 
     sleep 2
 
@@ -186,7 +208,7 @@ else
     echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
     echo "    -f 09_lock_triage_queries.sql"
     echo ""
-    echo "Session A auto-releases after 120s. Waiting..."
+    echo "Session A auto-releases after 900s. Waiting..."
     wait
     ensure_min_duration 30
     echo "Drill complete."

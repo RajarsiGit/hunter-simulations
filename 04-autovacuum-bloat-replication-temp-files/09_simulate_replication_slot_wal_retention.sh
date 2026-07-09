@@ -18,8 +18,36 @@
 # `retained_wal` grows as writes continue — even though FreeStorageSpace
 # on the primary keeps shrinking with no runaway table in sight.
 #
+# Detectability — verified against queries/slow-queries/slow-queries-
+# replication-slots.sql (thresholds live in the slow-queries hunter,
+# actions/slow-queries.jsonc — this topic's own hunter does not own
+# replication-slot checks). This drill is fully self-contained (needs no
+# attached replica, unlike 10):
+#   RS-1 slot_lag_warning  warning  — inactive slot retaining >= 1 GiB WAL
+#   RS-2 slot_lag_critical critical — inactive slot retaining >= 10 GiB WAL
+# retained_wal = pg_current_wal_lsn() - confirmed_flush_lsn for any slot with
+# active=false, so this only needs enough WAL-generating writes after slot
+# creation — no timing trick required, unlike the temp-spill 1h-floor
+# mechanic in 07/08.
+#
+# CAVEAT — this is the most operationally dangerous drill in this folder:
+# retained WAL is REAL disk consumption on the primary that keeps growing
+# for as long as the slot exists, regardless of how this script's own run
+# finishes. 10+ GiB retained is a genuine storage risk on a small drill
+# instance — confirm FreeStorageSpace/TransactionLogsDiskUsage headroom
+# before running at the scale below, and don't forget the slot is left
+# behind afterward (by design, so the hunter has a detection window) — drop
+# it explicitly (see the remediation command printed at the end) once you're
+# done drilling, or it will keep retaining WAL indefinitely.
+#
 # Usage:
 #   ./09_simulate_replication_slot_wal_retention.sh [row_count] [--yes]
+#
+# Default row_count=6000000 (was 2000000) — payload is repeat(md5(),100) =
+# 3200 bytes/row, so 6M rows is ~19.2 GiB of row data alone; WAL volume for
+# a bulk insert this size (full-page images etc.) comfortably clears the
+# 10 GiB RS-2 critical floor with margin, vs. the old default's ~6.4 GiB
+# which sat awkwardly close to but not reliably past it.
 #
 # Note: this creates a REAL logical replication slot. If your instance
 # already tracks replication slots for legitimate consumers (DMS, Debezium,
@@ -30,7 +58,7 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-2000000}"
+ROW_COUNT="${1:-6000000}"
 SLOT_NAME="drill_inactive_slot"
 
 confirm_drill "This creates a logical replication slot named '${SLOT_NAME}' (never consumed) and generates ${ROW_COUNT} rows of WAL-producing writes to show retained_wal growing." "$@"

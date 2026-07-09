@@ -32,7 +32,17 @@
 #   ./17_simulate_workflow_blockage.sh [mode] [hold_seconds] [--yes]
 #
 # mode: stuck_worker (default) | skip_locked_demo
-# Default: hold_seconds=90
+# Default: hold_seconds=900 — clears the hunter's 300s poll interval
+# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap.
+# Session B's FOR UPDATE wait feeds blocking_summary (LB-1 lock_blocking_warning
+# needs blocked_count>=3 — this drill alone only produces 1 waiter, so it
+# clears the top-5-root-blocker cap and is visible in the report but won't
+# reach LB-1/LB-2 severity on its own; run alongside 18 for a blocked_count
+# that crosses those thresholds).
+#
+# CEILING WARNING: SysCloud baseline (runbook §7.3) lock_timeout=10s /
+# statement_timeout=5min would otherwise abort Session B almost immediately
+# and cut Session A's hold at 300s — both disabled below.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -41,7 +51,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 MODE="${1:-stuck_worker}"
-HOLD_SECONDS="${2:-90}"
+HOLD_SECONDS="${2:-900}"
 
 if [[ "${MODE}" != "stuck_worker" && "${MODE}" != "skip_locked_demo" ]]; then
     echo "Usage: $0 [stuck_worker|skip_locked_demo] [hold_seconds] [--yes]"
@@ -72,6 +82,8 @@ if [[ "${MODE}" == "stuck_worker" ]]; then
 
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_workflow_stuck_worker';
+             SET statement_timeout = 0;
+             SET idle_in_transaction_session_timeout = 0;
              BEGIN;
              UPDATE lock_test_workflow_jobs
              SET status = 'RUNNING', updated_at = now()
@@ -91,6 +103,8 @@ if [[ "${MODE}" == "stuck_worker" ]]; then
 
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_workflow_blocked_worker';
+             SET statement_timeout = 0;
+             SET lock_timeout = 0;
              BEGIN;
              SELECT id, job_key, status
              FROM   lock_test_workflow_jobs

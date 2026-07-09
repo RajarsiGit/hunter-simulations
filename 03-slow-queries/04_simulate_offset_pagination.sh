@@ -15,13 +15,15 @@
 # Usage:
 #   ./04_simulate_offset_pagination.sh [deep_offset]
 #
-# Defaults: deep_offset=200000
+# Defaults: deep_offset=9000000 (extreme — walks/discards nine million rows
+# on every EXPLAIN; slowq_orders is seeded at 12M rows in 01_setup so this
+# stays within range with margin)
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-DEEP_OFFSET="200000"
+DEEP_OFFSET="9000000"
 for arg in "$@"; do
     [[ "${arg}" =~ ^[0-9]+$ ]] && DEEP_OFFSET="${arg}"
 done
@@ -47,8 +49,9 @@ echo "Cursor (created_at at offset ${DEEP_OFFSET}): ${CUTOFF}"
 
 echo ""
 echo "--- Good: keyset pagination using that cursor (index-friendly, O(limit)) ---"
-echo "Note: requires idx_slowq_orders_created_at_desc from 02/README fix step for a true Index Scan;"
-echo "      without it this still seq-scans, but touches the WHERE clause instead of walking OFFSET rows."
+echo "Note: requires a idx_slowq_orders_created_at_desc index (not created by any drill"
+echo "      here) for a true Index Scan; without it this still seq-scans, but touches"
+echo "      the WHERE clause instead of walking OFFSET rows."
 "${PSQL[@]}" -c "SET application_name = 'drill_offset_pagination';
                   EXPLAIN (ANALYZE, BUFFERS)
                   SELECT * FROM slowq_orders
@@ -59,19 +62,20 @@ echo ""
 echo "--- Sustaining load so the slow-queries hunter can actually observe it ---"
 echo "    A single EXPLAIN above finishes in well under a second and only bumps"
 echo "    seq_scan by 1 — nowhere near what the live hunter needs. duration_seconds"
-echo "    is measured from this statement's query_start, so it only crosses the"
-echo "    hunter's >=30s threshold near the END of the hold — a 90s hold keeps it"
-echo "    over threshold for a full 60s, comfortably wider than the poller's ~27s"
-echo "    tick cadence (vs. only ~5s of margin at the old 35s hold). Also bursts"
-echo "    1500 seq scans (seq_scan_tables, >1000 threshold) so that check fires too."
+echo "    is measured from this statement's query_start, so a 2400s hold clears"
+echo "    not just query_slow's >=30s warning threshold but query_critical's"
+echo "    >=1800s CRITICAL threshold too (actions/slow-queries.jsonc Q-2), with"
+echo "    600s to spare over the hunter's 300s poll interval (>=7 ticks of"
+echo "    overlap — EXTREME margin). Also bursts 200000 seq scans"
+echo "    (seq_scan_tables, >1000 threshold, ratio>0.80) so that check fires hard too."
 hold_session_active "drill_offset_pagination" \
-    "SELECT * FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 90
+    "SELECT * FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 2400
 run_seq_scan_burst "drill_offset_pagination" \
-    "1 FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 1500
+    "1 FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 200000
 wait "${HOLD_PID}" 2>/dev/null || true
 
 echo ""
-echo "Fix (not applied automatically — run manually if you want to see the full effect):"
+echo "Not applied automatically — run manually if you want to see the full effect:"
 echo "  CREATE INDEX CONCURRENTLY idx_slowq_orders_created_at_desc ON slowq_orders(created_at DESC);"
 echo ""
 echo "Drill complete. Compare 'Execution Time' between the two EXPLAIN blocks above —"

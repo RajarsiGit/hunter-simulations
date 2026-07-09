@@ -23,7 +23,18 @@
 # Usage:
 #   ./04_simulate_table_access_exclusive.sh [hold_seconds] [--yes]
 #
-# Default: hold_seconds=90
+# Default: hold_seconds=900 — clears the hunter's 300s poll interval
+# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap,
+# so DC-1 ddl_blocking_detected (waiter_count>=1, no duration threshold)
+# reliably gets sampled instead of finishing between two polls unobserved.
+#
+# CEILING WARNING: SysCloud baseline (runbook §7.3) is
+# idle_in_transaction_session_timeout=60s and statement_timeout=5min. Session
+# A's pg_sleep runs inside one statement, so statement_timeout (not the idle
+# timeout) is what would kill it early at those settings — both timeouts are
+# disabled below for this session only. Sessions B/C (waiters) similarly
+# disable lock_timeout (baseline 10s) so they keep waiting for the full hold
+# instead of erroring out almost immediately.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -31,7 +42,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-HOLD_SECONDS="${1:-90}"
+HOLD_SECONDS="${1:-900}"
 
 echo "=== DRILL: Table-Level AccessExclusiveLock ==="
 echo "Target : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -48,6 +59,8 @@ echo "--- Session A: acquiring AccessExclusiveLock on lock_test_accounts ---"
 # This blocks all concurrent reads (SELECT) and writes (INSERT/UPDATE/DELETE).
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_access_exclusive_holder';
+         SET statement_timeout = 0;
+         SET idle_in_transaction_session_timeout = 0;
          BEGIN;
          LOCK TABLE lock_test_accounts IN ACCESS EXCLUSIVE MODE;
          SELECT pg_sleep(${HOLD_SECONDS});
@@ -62,6 +75,8 @@ echo "--- Session B: SELECT on lock_test_accounts — will block (needs AccessSh
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_access_exclusive_reader';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          SELECT count(*) FROM lock_test_accounts;" \
      2>&1 | sed 's#^#  [Session B / reader] #' &
 READER_PID=$!
@@ -74,6 +89,8 @@ echo "--- Session C: UPDATE on lock_test_accounts — will also block ---"
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_access_exclusive_writer';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 1 WHERE id = 1;
          ROLLBACK;" \

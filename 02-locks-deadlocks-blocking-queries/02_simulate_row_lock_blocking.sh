@@ -22,7 +22,23 @@
 # Usage:
 #   ./02_simulate_row_lock_blocking.sh [row_id] [hold_seconds] [--yes]
 #
-# Defaults: row_id=1, hold_seconds=120
+# Defaults: row_id=1, hold_seconds=900 — clears TWO real thresholds from
+# actions/locks-deadlocks-blocking-queries.jsonc with wide margin: the 300s
+# poll interval (so a poll tick is guaranteed to land mid-hold regardless of
+# phase — 900s gives 3 full ticks of overlap) AND LB-3 idle_in_transaction_critical's
+# blocker_idle_age_seconds >= 300s threshold (600s margin).
+#
+# CEILING WARNING: SysCloud baseline session settings (jsonc verdict text,
+# runbook §7.3) are deadlock_timeout=15s, lock_timeout=10s,
+# idle_in_transaction_session_timeout=60s, statement_timeout=5min. If those
+# are live on the target role, Session A (idle-in-txn) is killed by the
+# server at 60s and Session B (waiter) errors out with a lock_timeout abort
+# at 10s — BOTH well before any hold_seconds value or the 300s LB-3
+# threshold is ever reached, regardless of how large hold_seconds is set.
+# Both sessions below explicitly SET these to 0 (disabled) for their own
+# connection only — this does not touch the role/database default, just
+# this drill's two sessions — so the intensity bump above is not silently
+# neutralized by the server's own safety timeouts.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -31,7 +47,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 ROW_ID="${1:-1}"
-HOLD_SECONDS="${2:-120}"
+HOLD_SECONDS="${2:-900}"
 
 echo "=== DRILL: Row-Level Lock Blocking ==="
 echo "Target  : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -42,16 +58,27 @@ echo "⚠️  Requires lock_test_accounts (run 01_setup_lock_drill_tables.sql fi
 confirm_drill "Opens two sessions: Session A updates row id=${ROW_ID} and holds it; Session B updates the same row and blocks." "$@"
 
 echo ""
-echo "--- Session A: acquiring RowExclusiveLock on id=${ROW_ID} (will idle-in-transaction) ---"
+echo "--- Session A: acquiring RowExclusiveLock on id=${ROW_ID}, then genuinely idle-in-transaction ---"
+echo "    (uses a client-side \\! sleep between statements, NOT pg_sleep inside one"
+echo "     statement — pg_sleep-in-one--c-string never actually leaves state='active',"
+echo "     it just changes wait_event, so it would never satisfy LB-3/idle_txn checks)"
 
-# Session A: opens BEGIN, updates the row, then sleeps without committing.
-# This reproduces the "idle in transaction holding a RowExclusiveLock" pattern.
-psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-     -c "SET application_name = 'drill_row_lock_blocker';
-         BEGIN;
-         UPDATE lock_test_accounts SET balance = balance - 100 WHERE id = ${ROW_ID};
-         SELECT pg_sleep(${HOLD_SECONDS});
-         ROLLBACK;" &
+# Session A: BEGIN + UPDATE as one round trip, THEN a client-side sleep via
+# the psql \! meta-command (shells out locally; sends nothing to the server)
+# BEFORE the next statement (ROLLBACK). Because the server genuinely has no
+# next command to process during that gap, pg_stat_activity reports
+# state='idle in transaction' for the whole IDLE_SECONDS window — the real
+# production shape LB-3/idle_txn_accumulation are written to detect.
+psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" <<SQL_A &
+SET application_name = 'drill_row_lock_blocker';
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+BEGIN;
+UPDATE lock_test_accounts SET balance = balance - 100 WHERE id = ${ROW_ID};
+\! sleep ${HOLD_SECONDS}
+ROLLBACK;
+SQL_A
 BLOCKER_PID=$!
 echo "  Session A spawned (shell pid ${BLOCKER_PID}) — holding RowExclusiveLock on id=${ROW_ID}"
 
@@ -63,8 +90,13 @@ echo "--- Session B: attempting UPDATE on same row id=${ROW_ID} — will block o
 
 # Session B: tries the same row — will wait for A's RowExclusiveLock.
 # Shows wait_event_type='Lock', wait_event='transactionid' in pg_stat_activity.
+# lock_timeout=0 is essential here: at the SysCloud baseline (lock_timeout=10s)
+# this session would abort after 10s of waiting, well before the poller's 300s
+# tick or LB-3's 300s idle-age threshold could ever observe the block.
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_row_lock_waiter';
+         SET statement_timeout = 0;
+         SET lock_timeout = 0;
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 50 WHERE id = ${ROW_ID};
          ROLLBACK;" &

@@ -27,7 +27,15 @@
 #   ./13_simulate_fk_contention.sh [mode] [hold_seconds] [--yes]
 #
 # mode: child_blocks_parent (default) | parent_blocks_child
-# Default: hold_seconds=90
+# Default: hold_seconds=900 — clears the hunter's 300s poll interval
+# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap so
+# FK-1 fk_contention_detected (waiter_count>=1 on a ShareRowExclusiveLock,
+# queries/locks-deadlocks-blocking-queries/fk-contention.sql) is reliably
+# sampled while Session B is queued.
+#
+# CEILING WARNING: SysCloud baseline (runbook §7.3) lock_timeout=10s and
+# statement_timeout=5min would otherwise abort Session B almost immediately
+# and cut Session A's hold at 300s — both disabled below for these sessions.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -36,7 +44,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 MODE="${1:-child_blocks_parent}"
-HOLD_SECONDS="${2:-90}"
+HOLD_SECONDS="${2:-900}"
 
 if [[ "${MODE}" != "child_blocks_parent" && "${MODE}" != "parent_blocks_child" ]]; then
     echo "Usage: $0 [child_blocks_parent|parent_blocks_child] [hold_seconds] [--yes]"
@@ -73,6 +81,8 @@ if [[ "${MODE}" == "child_blocks_parent" ]]; then
     echo "--- Session A: insert child row + hold transaction ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_fk_child_inserter';
+             SET statement_timeout = 0;
+             SET idle_in_transaction_session_timeout = 0;
              BEGIN;
              INSERT INTO lock_test_child (id, parent_id, payload)
              VALUES (100, 1, 'drill-child-hold');
@@ -87,6 +97,8 @@ if [[ "${MODE}" == "child_blocks_parent" ]]; then
     echo "--- Session B: DELETE parent row (id=1) — blocked by Session A's FK share lock ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_fk_parent_deleter';
+             SET statement_timeout = 0;
+             SET lock_timeout = 0;
              BEGIN;
              DELETE FROM lock_test_parent WHERE id = 1;
              ROLLBACK;" \
@@ -107,6 +119,8 @@ else
     echo "--- Session A: DELETE parent (id=2) + hold transaction ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_fk_parent_deleter_hold';
+             SET statement_timeout = 0;
+             SET idle_in_transaction_session_timeout = 0;
              BEGIN;
              DELETE FROM lock_test_parent WHERE id = 2;
              SELECT pg_sleep(${HOLD_SECONDS});
@@ -120,6 +134,8 @@ else
     echo "--- Session B: INSERT child referencing parent_id=2 → blocked on FK check ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_fk_child_inserter_blocked';
+             SET statement_timeout = 0;
+             SET lock_timeout = 0;
              BEGIN;
              INSERT INTO lock_test_child (id, parent_id, payload)
              VALUES (101, 2, 'drill-child-blocked');

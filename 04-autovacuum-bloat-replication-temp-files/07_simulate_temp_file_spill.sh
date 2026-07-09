@@ -16,23 +16,52 @@
 # pg_stat_statements.temp_blks_written, then the fix (index or raised
 # work_mem for that session/role only — never a blind global bump).
 #
+# Detectability — verified against queries/autovacuum-bloat-replication-temp-
+# files/temp-usage.sql (thresholds in THIS topic's own hunter,
+# actions/autovacuum-bloat-replication-temp-files.jsonc):
+#   TF-1 temp_spill_warning  warning  — temp_bytes_per_hour >= 1 GiB  (1073741824 B)
+#   TF-2 temp_spill_critical critical — temp_bytes_per_hour >= 25 GiB (26843545600 B)
+# temp_bytes_per_hour = pg_stat_database.temp_bytes (cumulative since
+# stats_reset) / hours_since_reset, where hours_since_reset FLOORS at 1h once
+# stats_reset is known. That floor is the exploitable lever: reset this
+# database's stats immediately before spilling, and for the entire first hour
+# afterward the denominator stays pinned at 1.0 — so temp_bytes_per_hour
+# equals the raw cumulative temp_bytes spilled so far. Concretely: spill
+# >=25 GiB within an hour of a reset and TF-2 fires; spill less and only
+# TF-1 (1 GiB) fires. NOTE the query's own pre-filter requires >=360s (6 min)
+# since reset before a row is returned at all, so the hunter can't see this
+# on the very first poll immediately after a reset.
+# SKIP_STATS_RESET=1 (env var) skips the reset below — set this when run_all.sh
+# already did ONE shared reset before launching 07/08 concurrently, so sibling
+# temp-spill drills' cumulative contributions stack instead of each resetting
+# (and zeroing) what the others already spilled.
+# CAVEAT — disk space: --full-scale row counts below create multi-GB base
+# tables PLUS transient temp files during the spill itself; check
+# FreeStorageSpace/available disk before running this at scale on a small
+# drill instance. Reaching TF-1's 1 GiB/h warning needs only a modest spill
+# (any single mode at even moderate row counts clears it easily); reaching
+# TF-2's 25 GiB/h critical realistically requires STACKING multiple modes
+# concurrently (see run_all.sh) rather than one script alone.
+#
 # Usage:
 #   ./07_simulate_temp_file_spill.sh <sort|hash_join|group_by> [row_count] [--yes]
 #
+# Defaults (was sort/group_by=5000000, hash_join=2000000):
+#   sort/group_by row_count=8000000, hash_join row_count=4000000
+#
 # Examples:
-#   ./07_simulate_temp_file_spill.sh sort 5000000
-#   ./07_simulate_temp_file_spill.sh hash_join 2000000
-#   ./07_simulate_temp_file_spill.sh group_by 5000000
+#   ./07_simulate_temp_file_spill.sh sort 8000000
+#   ./07_simulate_temp_file_spill.sh hash_join 4000000
+#   ./07_simulate_temp_file_spill.sh group_by 8000000
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 MODE="${1:-sort}"
-ROW_COUNT="${2:-5000000}"
-
 case "${MODE}" in
-    sort|hash_join|group_by) ;;
+    sort|group_by) ROW_COUNT="${2:-8000000}" ;;
+    hash_join)     ROW_COUNT="${2:-4000000}" ;;
     *) echo "Usage: $0 <sort|hash_join|group_by> [row_count] [--yes]"; exit 1 ;;
 esac
 
@@ -41,6 +70,19 @@ confirm_drill "This creates temp-spill test table(s) (mode=${MODE}, ~${ROW_COUNT
 echo ""
 echo "=== DRILL: Temp File Spill — mode=${MODE} (Investigation Guide §5.5-5.7) ==="
 echo "Target: ${PGHOST}:${PGPORT}/${PGDATABASE} | rows=${ROW_COUNT}"
+
+if [[ -z "${SKIP_STATS_RESET:-}" ]]; then
+    echo ""
+    echo "--- Resetting ${PGDATABASE}'s stats so temp_bytes_per_hour is measured from"
+    echo "    THIS drill's spill, not diluted by whatever temp_bytes accumulated"
+    echo "    historically (see header note on the TF-1/TF-2 1h floor mechanic) ---"
+    psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
+         -c "SELECT pg_stat_reset();"
+else
+    echo ""
+    echo "--- Skipping stats reset (SKIP_STATS_RESET=1) — run_all.sh already reset"
+    echo "    once so concurrent temp-spill drills stack their contributions ---"
+fi
 
 echo ""
 echo "--- Baseline temp usage (pg_stat_database) ---"

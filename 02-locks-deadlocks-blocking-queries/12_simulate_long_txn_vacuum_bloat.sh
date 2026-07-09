@@ -28,7 +28,19 @@
 # Usage:
 #   ./12_simulate_long_txn_vacuum_bloat.sh [hold_seconds] [--yes]
 #
-# Default: hold_seconds=120
+# Default: hold_seconds=900. NOTE: this scenario isn't gated by any check in
+# THIS hunter (actions/locks-deadlocks-blocking-queries.jsonc) — table bloat
+# detection lives in the autovacuum-bloat-replication-temp-files hunter. 900s
+# matches run_all.sh's shared HOLD variable for this folder and gives a wide
+# window for manual/agent inspection of n_dead_tup and backend_xmin.
+#
+# NOTE: like the pre-fix 02/11, "SELECT pg_sleep(N)" inside one -c string
+# keeps state='active' the whole time, NOT 'idle in transaction', despite
+# this script's inline comments — harmless here since no check in this
+# jsonc keys off session state for this scenario, so left as-is.
+#
+# CEILING WARNING: SysCloud baseline (runbook §7.3) statement_timeout=5min
+# would otherwise kill this session's pg_sleep at 300s — disabled below.
 # Credentials come from .env in the current directory (see simulations/.env.example).
 # =============================================================================
 
@@ -36,7 +48,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-HOLD_SECONDS="${1:-120}"
+HOLD_SECONDS="${1:-900}"
 
 echo "=== DRILL: Long-Running Transaction Blocking Vacuum ==="
 echo "Target     : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -58,6 +70,8 @@ echo "    backend_xmin will prevent vacuum from cleaning dead rows created after
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_long_txn_snapshot_holder';
+         SET statement_timeout = 0;
+         SET idle_in_transaction_session_timeout = 0;
          BEGIN ISOLATION LEVEL REPEATABLE READ;
          SELECT count(*) FROM lock_test_accounts;
          SELECT pg_sleep(${HOLD_SECONDS});

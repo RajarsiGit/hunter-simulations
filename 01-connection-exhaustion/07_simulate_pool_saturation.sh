@@ -13,6 +13,22 @@
 # Usage:
 #   ./07_simulate_pool_saturation.sh [num_connections] [hold_seconds] [--yes]
 #
+# Defaults: num_connections=500, hold_seconds=2400 (extreme — see actions/
+# connection-exhaustion.jsonc). What this actually saturates is PgBouncer's
+# per-pool default_pool_size (server-side slots), NOT max_client_conn: once
+# num_connections exceeds default_pool_size, every excess client queues,
+# driving PB-ps-1 (maxwait>=30s OR cl_waiting>=20) and PB-ps-2
+# (maxwait>=120s CRITICAL) in connection-summary's pgbouncer_saturation
+# source. A 2400s hold means anything queued behind these connections waits
+# up to 2400s — 20x past the 120s critical threshold — and gives ~8 ticks of
+# overlap with the hunter's 300s poll interval (the previous 120s hold barely
+# cleared 120s itself with zero margin). NOTE: PB-cc-1/PB-cc-2
+# (max_client_conn, default_pool_size aside — that ceiling is typically
+# huge: the production baseline is 200000, precedent-widened to 150000
+# during Box onboarding per the jsonc header) are NOT realistically
+# reachable by a client-count drill at this scale and aren't the target here
+# — cl_waiting/maxwait are.
+#
 # Example: open 200 concurrent connections through PgBouncer, hold for 2 minutes
 #   ./07_simulate_pool_saturation.sh 200 120 --yes
 #
@@ -24,15 +40,22 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
-NUM_CONNECTIONS="${ARGS[0]:-100}"
-HOLD_SECONDS="${ARGS[1]:-120}"
-MAX_PARALLEL="${MAX_PARALLEL:-50}"   # batch size to avoid overwhelming the local shell
+NUM_CONNECTIONS="${ARGS[0]:-500}"
+HOLD_SECONDS="${ARGS[1]:-2400}"
+MAX_PARALLEL="${MAX_PARALLEL:-150}"   # batch size to avoid overwhelming the local shell
 
 echo "=== DRILL: PgBouncer Pool Saturation Simulator ==="
 echo "Target (via PgBouncer): ${PGBOUNCER_HOST}:${PGBOUNCER_PORT}/${PGDATABASE}"
 echo "Connections: ${NUM_CONNECTIONS} | Hold duration: ${HOLD_SECONDS}s | Batch size: ${MAX_PARALLEL}"
 
 confirm_drill "This opens ${NUM_CONNECTIONS} concurrent connections through PgBouncer for ${HOLD_SECONDS}s." "$@"
+
+echo ""
+echo "NOTE: ${NUM_CONNECTIONS} concurrent PgBouncer client connections may exceed"
+echo "max_client_conn on a small drill pooler, or the OS's open-files/process"
+echo "ulimits on this machine. If psql starts failing partway through, check"
+echo "\`SHOW CONFIG;\` on the PgBouncer admin console for max_client_conn (and"
+echo "\`ulimit -n\`/\`ulimit -u\` here) rather than assuming the drill needs more."
 
 run_one() {
     psql -h "${PGBOUNCER_HOST}" -p "${PGBOUNCER_PORT}" -U "${PGUSER}" -d "${PGDATABASE}" \

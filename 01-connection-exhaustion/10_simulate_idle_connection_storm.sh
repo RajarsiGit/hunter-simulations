@@ -20,6 +20,13 @@
 # Usage:
 #   ./10_simulate_idle_connection_storm.sh [num_connections] [hold_seconds] [--yes]
 #
+# Defaults: num_connections=500, hold_seconds=2400 (extreme — see actions/
+# connection-exhaustion.jsonc C-1/C-2: these connections count toward
+# connections_pct_used in connection-summary.sql, >=80% warning / >=95%
+# critical of max_connections. 2400s gives ~8 ticks of overlap with the
+# hunter's 300s poll interval, vs. the previous 600s default which only gave
+# ~2 ticks of margin.
+#
 # Example: open 150 plain idle connections directly against RDS for 10 minutes
 #   ./10_simulate_idle_connection_storm.sh 150 600 --yes
 # =============================================================================
@@ -28,15 +35,23 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
-NUM_CONNECTIONS="${ARGS[0]:-100}"
-HOLD_SECONDS="${ARGS[1]:-600}"
-MAX_PARALLEL="${MAX_PARALLEL:-50}"
+NUM_CONNECTIONS="${ARGS[0]:-500}"
+HOLD_SECONDS="${ARGS[1]:-2400}"
+MAX_PARALLEL="${MAX_PARALLEL:-150}"
 
 echo "=== DRILL: Idle Connection Storm / Leak Simulator ==="
 echo "Target (direct, bypassing PgBouncer): ${PGHOST}:${PGPORT}/${PGDATABASE}"
 echo "Connections: ${NUM_CONNECTIONS} | Idle duration: ${HOLD_SECONDS}s | Batch size: ${MAX_PARALLEL}"
 
 confirm_drill "This opens ${NUM_CONNECTIONS} plain idle (no transaction) connections directly against RDS for ${HOLD_SECONDS}s — simulates a leaked pool / deploy scale-out storm." "$@"
+
+echo ""
+echo "NOTE: ${NUM_CONNECTIONS} concurrent connections may exceed max_connections on a"
+echo "small drill instance, or the OS's open-files/process ulimits on this machine."
+echo "If psql starts failing with \"FATAL: too many connections\" partway through,"
+echo "that's max_connections capping actual concurrency below NUM_CONNECTIONS — check"
+echo "\`SHOW max_connections;\` on the target (and \`ulimit -n\`/\`ulimit -u\` here)"
+echo "rather than assuming the drill needs to be bigger."
 
 run_one() {
     # SELECT 1 completes immediately, then the backend sits at state='idle'

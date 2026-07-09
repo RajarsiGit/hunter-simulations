@@ -30,8 +30,10 @@ chmod +x *.sh  # already executable in this checkout, but harmless to re-run
 No mitigation (session termination/throttling) or cleanup scripts are
 included in this folder, and no drill blocks on a confirmation prompt —
 every drill fires immediately, only demonstrates the problem, and leaves it
-in place (sessions self-expire on their own after their hold duration,
-minimum 60s in fast mode / minutes in full mode) so the hunters have a real
+in place (sessions self-expire on their own after their hold duration —
+600s in `run_all.sh --fast`, 2400s in `--full` and in every script's own
+standalone default, comfortably clearing the connection-exhaustion hunter's
+300s poll interval with multiple ticks of margin) so the hunters have a real
 window to detect them.
 
 ## Automated full run
@@ -59,7 +61,7 @@ DRILL_YES=1 ./run_all.sh
 
 ```bash
 # Drill: idle-in-transaction blocker (agent/non-interactive)
-DRILL_YES=1 ./06_simulate_idle_in_transaction.sh 5 300 my_test_table
+DRILL_YES=1 ./06_simulate_idle_in_transaction.sh 200 2400 my_test_table
 
 # Detect
 psql -f 01_diagnostic_queries.sql
@@ -67,25 +69,26 @@ psql -f 01_diagnostic_queries.sql
 # ─────────────────────────────────────────────
 
 # Drill: PgBouncer transaction-pool saturation
-./07_simulate_pool_saturation.sh 200 120 --yes
+./07_simulate_pool_saturation.sh 500 2400 --yes
 psql -h "$PGBOUNCER_HOST" -p "$PGBOUNCER_PORT" -U "$PGBOUNCER_ADMIN_USER" pgbouncer -c "SHOW POOLS;"
 ./03_pgbouncer_health_check.sh
 
 # ─────────────────────────────────────────────
 
 # Drill: per-role connection limit breach (single terminal, self-cleaning)
-./09_simulate_role_limit_breach.sh 3 6 --yes
+./09_simulate_role_limit_breach.sh 25 60 --yes
 
 # ─────────────────────────────────────────────
 
 # Drill: plain idle connection storm / leak signature
-./10_simulate_idle_connection_storm.sh 150 600 --yes
+./10_simulate_idle_connection_storm.sh 500 2400 --yes
 psql -c "SELECT state, count(*) FROM pg_stat_activity WHERE application_name='drill_idle_conn_storm' GROUP BY state;"
 
 # ─────────────────────────────────────────────
 
-# Drill: PgBouncer session-mode pool pinning (needs pool_mode=session already set)
-./11_simulate_pgbouncer_session_pool_pinning.sh 5 180 --yes
+# Drill: PgBouncer session-mode pool pinning (needs pool_mode=session already set;
+# override arg 1 with the target's real default_pool_size if it isn't 20)
+./11_simulate_pgbouncer_session_pool_pinning.sh 20 2400 --yes
 ```
 
 ## Notes
@@ -93,4 +96,4 @@ psql -c "SELECT state, count(*) FROM pg_stat_activity WHERE application_name='dr
 - `01`/`04`/`06`/`09`/`10` connect **directly to RDS** (port 5432) so `pg_stat_activity` reflects true backend state.
 - `03`/`07`/`11` connect to **PgBouncer** — `03`/`11`'s admin checks use the `pgbouncer` virtual database (`SHOW`/`PAUSE`/`KILL`/`RESUME` only, no normal SQL); `07`/`11`'s drill traffic uses `PGBOUNCER_HOST`/`PGBOUNCER_PORT` with a normal app user.
 - `11` cannot reproduce pinning unless the target PgBouncer database is already configured `pool_mode = session` — that's a `pgbouncer.ini` change, not something a script sets (see runbook parity note in the root `connection-exhaustion/` README).
-- Every `.sh` drill tags sessions with a unique `application_name` (`drill_idle_txn`, `drill_pool_saturation`, `drill_role_limit`, `drill_idle_conn_storm`, `drill_session_pinning`), fires with no confirmation gate, and self-expires after its hold duration (minimum 60s via `run_all.sh` fast mode, minutes in full mode — so hunters have a real window to detect it) — there is no mitigation/cleanup script to end a drill early.
+- Every `.sh` drill tags sessions with a unique `application_name` (`drill_idle_txn`, `drill_pool_saturation`, `drill_role_limit`, `drill_idle_conn_storm`, `drill_session_pinning`), fires with no confirmation gate, and self-expires after its hold duration (600s via `run_all.sh --fast`, 2400s in `--full` and in every script's own standalone default — comfortably past the connection-exhaustion hunter's 300s poll interval, so hunters have a real window to detect it) — there is no mitigation/cleanup script to end a drill early.

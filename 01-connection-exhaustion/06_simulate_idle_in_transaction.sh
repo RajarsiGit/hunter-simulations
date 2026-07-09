@@ -14,6 +14,15 @@
 # Usage:
 #   ./06_simulate_idle_in_transaction.sh [num_sessions] [hold_seconds] [target_table] [--yes]
 #
+# Defaults: num_sessions=200, hold_seconds=2400 (extreme — see actions/
+# connection-exhaustion.jsonc: these sessions count toward C-1/C-2's
+# connections_pct_used, >=80%/95% of max_connections, via connection-summary.sql;
+# 2400s clears the SQL's own idle_txn_over_5min marker (300s) 8x over and
+# overlaps the hunter's 300s poll interval for ~8 consecutive ticks instead of
+# risking a single boundary miss — the previous 300s default was exactly equal
+# to one poll tick, i.e. a coin flip on whether any tick landed inside the
+# window at all).
+#
 # Example: 5 sessions, each holding a row lock for 10 minutes, non-interactive
 #   ./06_simulate_idle_in_transaction.sh 5 600 my_test_table --yes
 # =============================================================================
@@ -22,8 +31,8 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
-NUM_SESSIONS="${ARGS[0]:-3}"
-HOLD_SECONDS="${ARGS[1]:-300}"
+NUM_SESSIONS="${ARGS[0]:-200}"
+HOLD_SECONDS="${ARGS[1]:-2400}"
 TARGET_TABLE="${ARGS[2]:-}"
 
 echo "=== DRILL: Idle-in-Transaction Simulator ==="
@@ -32,6 +41,14 @@ echo "Sessions: ${NUM_SESSIONS} | Hold duration: ${HOLD_SECONDS}s"
 [[ -n "${TARGET_TABLE}" ]] && echo "Target table: ${TARGET_TABLE} (will acquire row lock via SELECT ... FOR UPDATE)"
 
 confirm_drill "This opens ${NUM_SESSIONS} idle-in-transaction session(s) that will not commit for ${HOLD_SECONDS}s." "$@"
+
+echo ""
+echo "NOTE: ${NUM_SESSIONS} concurrent connections may exceed max_connections on a"
+echo "small drill instance, or the OS's open-files/process ulimits on this machine."
+echo "If psql starts failing with \"FATAL: too many connections\" partway through,"
+echo "that's max_connections capping actual concurrency below NUM_SESSIONS — check"
+echo "\`SHOW max_connections;\` on the target (and \`ulimit -n\`/\`ulimit -u\` here)"
+echo "rather than assuming the drill needs to be bigger."
 
 # Note: output from the ${NUM_SESSIONS} background psql processes will
 # interleave/garble on screen since they print to the same terminal

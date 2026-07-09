@@ -16,7 +16,12 @@
 --   psql -h $PGHOST -p $PGPORT -U $PGUSER -d $PGDATABASE \
 --        -f 01_setup_slow_query_tables.sql
 --
--- Takes 10-30s depending on instance size (seeds ~650k rows total).
+-- EXTREME SIZING: seeds ~27M rows total so every downstream drill has huge
+-- data volume to hammer the planner/IO hard and clear every hunter threshold
+-- (queries/slow-queries/slow-queries-seq-scans.sql: seq_scan>1000, n_live_tup>
+-- 100k, size>10MB, ratio>0.80; slow-queries-stale-stats.sql: n_live_tup>100k)
+-- with a huge margin. Takes several minutes depending on instance size —
+-- this is intentional.
 -- =============================================================================
 
 \timing on
@@ -47,13 +52,16 @@ SELECT
     now() - (random() * interval '180 days')
 FROM (
     SELECT random() AS r
-    FROM generate_series(1, 300000)
+    FROM generate_series(1, 12000000)
 ) s;
 
 ANALYZE slowq_orders;
 
 -- -----------------------------------------------------------------------------
 -- slowq_customers — Scenario source for function-on-indexed-column drills.
+-- Sized well above the slow-queries hunter's n_live_tup > 100k pre-filter so
+-- seq_scan_tables can actually fire for this table too (at 50k rows it
+-- couldn't).
 -- -----------------------------------------------------------------------------
 DROP TABLE IF EXISTS slowq_customers CASCADE;
 CREATE TABLE slowq_customers (
@@ -66,7 +74,7 @@ INSERT INTO slowq_customers (email, status)
 SELECT
     'user' || g || '@example.com',
     CASE WHEN random() < 0.8 THEN 'active' ELSE 'inactive' END
-FROM generate_series(1, 50000) AS g;
+FROM generate_series(1, 3000000) AS g;
 
 ANALYZE slowq_customers;
 
@@ -85,7 +93,7 @@ SELECT jsonb_build_object(
     'status', substr(md5(random()::text), 1, 8),
     'payload', repeat(md5(random()::text), 10)
 )
-FROM generate_series(1, 300000);
+FROM generate_series(1, 12000000);
 
 ANALYZE slowq_json_events;
 
@@ -98,4 +106,4 @@ UNION ALL
 SELECT 'slowq_json_events', count(*) FROM slowq_json_events;
 
 \echo 'Setup complete. No indexes exist beyond primary keys — that is intentional;'
-\echo 'each drill''s --fix mode creates the index that resolves its scenario.'
+\echo 'these drills only demonstrate the problem, they never fix it.'

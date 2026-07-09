@@ -47,17 +47,17 @@ echo ""
 echo "--- Sustaining load so the slow-queries hunter can actually observe it ---"
 echo "    A single EXPLAIN above finishes in well under a second and only bumps"
 echo "    seq_scan by 1 — nowhere near what the live hunter needs. duration_seconds"
-echo "    is measured from this statement's query_start, so it only crosses the"
-echo "    hunter's >=30s threshold near the END of the hold — a 180s hold keeps it"
-echo "    over threshold for a full 150s, comfortably wider than the poller's ~27s"
-echo "    tick cadence (vs. only ~5s of margin at the old 35s hold), so query_slow"
-echo "    reliably fires. NOTE: seq_scan_tables still won't fire for this table —"
-echo "    slowq_customers has only 50k rows, below the hunter's n_live_tup > 100k"
-echo "    pre-filter, regardless of hold duration or seq_scan_ratio."
+echo "    is measured from this statement's query_start, so a 2400s hold clears"
+echo "    not just query_slow's >=30s warning threshold but query_critical's"
+echo "    >=1800s CRITICAL threshold too (actions/slow-queries.jsonc Q-2), with"
+echo "    600s to spare over the hunter's 300s poll interval (>=7 ticks of"
+echo "    overlap — EXTREME margin), so query_slow/query_critical reliably fire."
+echo "    slowq_customers is now seeded at 3M rows (01_setup), way above the"
+echo "    hunter's n_live_tup > 100k pre-filter, so seq_scan_tables fires too."
 hold_session_active "drill_function_predicate" \
-    "SELECT * FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 180
+    "SELECT * FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 2400
 run_seq_scan_burst "drill_function_predicate" \
-    "1 FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 1500
+    "1 FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 200000
 wait "${HOLD_PID}" 2>/dev/null || true
 
 echo ""

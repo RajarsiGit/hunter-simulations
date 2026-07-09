@@ -15,20 +15,40 @@
 # vacuum runs. Leaves the bloat in place (no VACUUM/REINDEX is run) so the
 # hunter has a real window to detect it.
 #
+# Detectability — verified against C:\SysCloud\Production\AI-Hunters\queries\
+# slow-queries\slow-queries-bloated-tables.sql (thresholds live in the
+# slow-queries hunter, actions/slow-queries.jsonc — this topic's OWN hunter,
+# autovacuum-bloat-replication-temp-files.jsonc, only owns temp-file-spill
+# and config-hygiene checks, NOT table bloat):
+#   T-4 table_high_bloat     warning  — dead_tup_ratio > 0.30, total_tuples > 10000
+#   T-3 table_critical_bloat critical — dead_tup_ratio > 0.60 (same floor)
+# Autovacuum is now explicitly disabled on the table before churning (was
+# previously left to chance — autovacuum could race in between UPDATE rounds
+# and quietly vacuum the bloat away before the hunter's poll ever saw it).
+# This also deterministically fires two more real checks from
+# slow-queries-autovacuum-disabled.sql:
+#   AV-1 autovacuum_disabled          warning  — autovacuum_enabled=false in reloptions
+#   AV-2 autovacuum_disabled_bloated  critical — same + dead_tup_ratio > 0.20
+#
 # Usage:
 #   ./03_simulate_table_bloat_update_churn.sh [row_count] [churn_rounds] [--yes]
 #
-# Example: 500k rows, 50 churn rounds
-#   ./03_simulate_table_bloat_update_churn.sh 500000 50
+# Defaults: row_count=1000000, churn_rounds=80 — with autovacuum disabled,
+# 80 rounds each updating ~10% of rows drives dead_tup ≈ 8,000,000 against
+# ~1,000,000 live rows (ratio ≈ 0.89), ~50% above the 0.60 CRITICAL floor —
+# wide margin against run-to-run randomness in exactly which rows collide.
+#
+# Example: 1M rows, 80 churn rounds
+#   ./03_simulate_table_bloat_update_churn.sh 1000000 80
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-500000}"
-CHURN_ROUNDS="${2:-50}"
+ROW_COUNT="${1:-1000000}"
+CHURN_ROUNDS="${2:-80}"
 
-confirm_drill "This creates/populates bloat_drill_records with ${ROW_COUNT} rows, then runs ${CHURN_ROUNDS} rounds of UPDATE churn on it to build up dead tuples faster than autovacuum can clean them." "$@"
+confirm_drill "This creates/populates bloat_drill_records with ${ROW_COUNT} rows, disables autovacuum on it, then runs ${CHURN_ROUNDS} rounds of UPDATE churn to build up dead tuples with nothing ever reclaiming them." "$@"
 
 echo ""
 echo "=== DRILL: Table Bloat from UPDATE/DELETE Churn (Investigation Guide §3.5 / Issue Guide §3.3-Scenario3) ==="
@@ -49,6 +69,12 @@ echo "--- Baseline dead-tuple stats ---"
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SELECT relname, n_live_tup, n_dead_tup, last_autovacuum, autovacuum_count
          FROM pg_stat_all_tables WHERE relname = 'bloat_drill_records';"
+
+echo ""
+echo "--- Disabling autovacuum on bloat_drill_records (drill-only — guarantees the"
+echo "    bloat isn't quietly reclaimed between churn rounds; also fires AV-1/AV-2) ---"
+psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
+     -c "ALTER TABLE bloat_drill_records SET (autovacuum_enabled = false);"
 
 echo ""
 echo "--- Generating churn: ${CHURN_ROUNDS} UPDATE rounds (every 10th row each round) ---"

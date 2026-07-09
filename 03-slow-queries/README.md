@@ -17,11 +17,14 @@ these scripts create real schema objects, real data, and real query load.
   required) — see `SKILL.md` for details.
 - Drill sessions tag themselves with a `drill_*` `application_name` so they're
   identifiable in `pg_stat_activity`.
-- No fix/remediation or cleanup scripts are included — every drill only
-  demonstrates the problem and leaves it in place (missing indexes, stale
-  statistics, etc.), holding load for at least 180s (02/03/05) so the hunters
-  have a real window to detect it. `run_all.sh` launches all 6 drills
-  concurrently by default to stack simultaneous load.
+- **Extreme by default** — no fix/remediation or cleanup scripts are
+  included; every drill only demonstrates the problem and leaves it in
+  place (missing indexes, stale statistics, etc.), holding load for at
+  least 2400s (02/03/04/05/06/07) — comfortably past the slow-queries
+  hunter's query_critical >=1800s threshold, not just query_slow's >=30s —
+  so the hunters have a wide window to detect it. `run_all.sh` launches all
+  6 drills concurrently by default to stack simultaneous load on top of a
+  ~27M-row dataset.
 
 ## Setup (run once)
 
@@ -30,9 +33,9 @@ set -a; source .env; set +a
 psql -h $PGHOST -p $PGPORT -U $PGUSER -d $PGDATABASE -f 01_setup_slow_query_tables.sql
 ```
 
-Creates `slowq_orders` (300k rows, skewed `status` distribution), `slowq_customers`
-(50k rows), and `slowq_json_events` (300k rows) — none with indexes beyond their
-primary key, by design.
+Creates `slowq_orders` (12M rows, skewed `status` distribution), `slowq_customers`
+(3M rows), and `slowq_json_events` (12M rows) — none with indexes beyond their
+primary key, by design. Setup alone can take several minutes at this scale.
 
 ## Drill scripts
 
@@ -77,7 +80,7 @@ set -a; source .env; set +a
 ./03_simulate_function_wrapped_predicate.sh --yes
 
 # Drill C — offset vs. keyset pagination (read-only)
-./04_simulate_offset_pagination.sh 250000
+./04_simulate_offset_pagination.sh 9000000
 
 # Drill D — JSONB CPU spike
 ./05_simulate_json_processing_spike.sh --yes
@@ -86,7 +89,7 @@ set -a; source .env; set +a
 ./06_simulate_stale_statistics.sh --yes
 
 # Drill F — retry storm
-./07_simulate_retry_storm.sh 30 15 --yes
+./07_simulate_retry_storm.sh 1500 300 --yes
 
 # Detection sweep
 psql -h $PGHOST -p $PGPORT -U $PGUSER -d $PGDATABASE -f 08_diagnostic_query_sweep.sql

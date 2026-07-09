@@ -3,31 +3,39 @@
 # run_all.sh — Slow Queries: automated end-to-end drill run
 # SysCloud DAL Team
 #
-# AGGRESSIVE MODE: setup runs once, then all 6 drills in this folder
-# (missing index, function-wrapped predicate, offset pagination, JSONB CPU
-# spike, stale statistics, retry storm) launch CONCURRENTLY against the
-# shared slowq_* tables to stack simultaneous load, then the diagnostic
-# sweep runs once every drill has finished. Note: 06 resets slowq_orders'
-# pg_stat counters (seq_scan/idx_scan) as part of forcing deterministic
-# staleness — if it lands mid-flight of 02's seq_scan burst it can zero out
-# that counter; the 1500-iteration burst plus 06's own separate table target
-# mean this rarely erases the signal in practice, but re-run 02 alone with
-# --only 02 if you need a clean seq_scan_tables reading.
+# EXTREME MODE: setup seeds ~27M rows across slowq_orders/slowq_customers/
+# slowq_json_events, then all 6 drills in this folder (missing index,
+# function-wrapped predicate, offset pagination, JSONB CPU spike, stale
+# statistics, retry storm) launch CONCURRENTLY against those shared tables to
+# stack simultaneous load as hard as possible, then the diagnostic sweep runs
+# once every drill has finished. Note: 06 resets slowq_orders' pg_stat
+# counters (seq_scan/idx_scan) as part of forcing deterministic staleness —
+# if it lands mid-flight of 02's seq_scan burst it can zero out that counter;
+# the 200000-iteration burst plus 06's own bulk insert (10M rows) mean this
+# rarely erases the signal in practice, but re-run 02 alone with --only 02 if
+# you need a clean seq_scan_tables reading.
 #
 # No fix/remediation or cleanup step, no confirmation gate: every drill
 # fires immediately, only demonstrates the problem, and leaves it in place
 # (stale stats, missing indexes, etc.) so the hunters have a real window to
-# detect them.
+# detect them. Every drill guarantees at least a 2400s (40min) observation
+# window — comfortably clearing the slow-queries hunter's query_critical
+# >=1800s threshold, not just query_slow's >=30s one — and the retry storm
+# defaults to 1500 sessions x 300 retries (see 07's own header for the
+# max_connections/ulimit caveat at this concurrency).
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Run only against a disposable/drill database.
+# Setup alone can take several minutes at this scale, and the retry storm +
+# concurrent drills can meaningfully load a small non-prod instance — this
+# is intentional.
 #
 # Usage:
 #   ./run_all.sh [--fast|--full] [--only 02,05] [--skip 07]
 #                [--list] [--yes]
 #
-#   --fast        Small offset/session counts (default) — full manifest
-#                  finishes in a few minutes (setup itself takes 10-30s).
-#   --full        Doc-example scale (matches README quick-start numbers).
+#   --fast        Extreme scale (default) — full manifest still takes several
+#                  minutes at this row/session count.
+#   --full        Even more extreme still, beyond default scale.
 #   --only 02,05  Only run these drill/detection ids (comma list).
 #   --skip 07     Skip these ids.
 #   --list        Print the manifest (with resolved args) and exit.
@@ -65,9 +73,9 @@ done
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-./run_all_logs/$(date +%Y%m%d_%H%M%S 2>/dev/null || echo run)}"
 
 if [[ "${FAST}" -eq 1 ]]; then
-    DEEP_OFFSET=300000; N07_SESS=40; N07_RETRY=20
+    DEEP_OFFSET=9000000; N07_SESS=1500; N07_RETRY=300
 else
-    DEEP_OFFSET=600000; N07_SESS=80; N07_RETRY=40
+    DEEP_OFFSET=11000000; N07_SESS=5000; N07_RETRY=500
 fi
 
 echo "=== Slow Queries — run_all.sh (${MODE_LABEL}) ==="
@@ -75,7 +83,7 @@ echo "Target: ${PGUSER}@${PGHOST}:${PGPORT}/${PGDATABASE}"
 [[ "${LIST_ONLY}" -eq 1 ]] && echo "(--list: printing manifest only, nothing will run)"
 echo ""
 
-psql_always_step "01" "Setup slowq_* tables (~650k rows, no secondary indexes)" -f 01_setup_slow_query_tables.sql
+psql_always_step "01" "Setup slowq_* tables (~27M rows, no secondary indexes)" -f 01_setup_slow_query_tables.sql
 
 bg_step "02" "Missing-index seq scan"                   ./02_simulate_missing_index_scan.sh "${YES_FLAG[@]}"
 bg_step "03" "Function-wrapped predicate defeats index" ./03_simulate_function_wrapped_predicate.sh "${YES_FLAG[@]}"

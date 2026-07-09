@@ -3,18 +3,21 @@
 # run_all.sh — Connection Exhaustion: automated end-to-end drill run
 # SysCloud DAL Team
 #
-# AGGRESSIVE MODE: every drill in this folder (idle-in-transaction, PgBouncer
+# EXTREME MODE: every drill in this folder (idle-in-transaction, PgBouncer
 # pool saturation, role-limit breach, idle-connection storm, PgBouncer
 # session-pool pinning) launches CONCURRENTLY (not one at a time) to stack
 # simultaneous issues and stress the target as hard as possible, then the
 # detection scripts run once every drill has finished. Individual scripts
 # remain the source of truth; this just sequences/launches them with
-# aggressive-by-default sizing and a pass/fail summary.
+# extreme-by-default sizing and a pass/fail summary.
 #
 # No mitigation/cleanup step, no confirmation gate: drills fire immediately
 # and drill sessions are left running/expiring on their own so the hunters
-# have a real window to detect them. Every drill guarantees at least a 25s
-# hold/observation window (fast mode) — full mode holds for minutes.
+# have a real window to detect them. actions/connection-exhaustion.jsonc
+# polls every 300s — fast mode holds for 600s (2 poll ticks of margin), full
+# mode holds for 2400s (~8 ticks), matching each drill script's own extreme
+# defaults. The previous fast-mode default (25s) was well UNDER one poll
+# tick and could be missed entirely; that was a real gap, not just caution.
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Same rules as every script in this folder.
 #
@@ -76,17 +79,17 @@ done
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-./run_all_logs/$(date +%Y%m%d_%H%M%S 2>/dev/null || echo run)}"
 
 if [[ "${FAST}" -eq 1 ]]; then
-    N06_SESS=10;  N06_HOLD=60
-    N07_CONN=100; N07_HOLD=60
-    N09_LIM=3;    N09_ATT=10
-    N10_CONN=200; N10_HOLD=60
-    N11_POOL=10;  N11_HOLD=60
+    N06_SESS=100; N06_HOLD=600
+    N07_CONN=200; N07_HOLD=600
+    N09_LIM=15;   N09_ATT=30
+    N10_CONN=200; N10_HOLD=600
+    N11_POOL=10;  N11_HOLD=600
 else
-    N06_SESS=15;   N06_HOLD=600
-    N07_CONN=400;  N07_HOLD=300
-    N09_LIM=3;     N09_ATT=10
-    N10_CONN=400;  N10_HOLD=900
-    N11_POOL=15;   N11_HOLD=300
+    N06_SESS=200; N06_HOLD=2400
+    N07_CONN=500; N07_HOLD=2400
+    N09_LIM=25;   N09_ATT=60
+    N10_CONN=500; N10_HOLD=2400
+    N11_POOL=20;  N11_HOLD=2400
 fi
 
 echo "=== Connection Exhaustion — run_all.sh (${MODE_LABEL}) ==="

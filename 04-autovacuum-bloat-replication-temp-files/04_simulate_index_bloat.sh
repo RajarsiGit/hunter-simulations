@@ -15,19 +15,37 @@
 # pg_stat_user_indexes (size + scan usage). No remediation (REINDEX / drop)
 # is applied — the bloat is left in place for the hunter to detect.
 #
+# Detectability — HONEST NOTE: neither actions/slow-queries.jsonc nor
+# actions/autovacuum-bloat-replication-temp-files.jsonc has a dedicated
+# "index bloat %" check (pg_stat_user_indexes has no dead-tuple-ratio
+# equivalent). What DOES fire is the underlying TABLE's own dead_tup_ratio —
+# the churn UPDATEs that bloat the indexes also dead-tuple index_bloat_drill
+# itself, which feeds the same table-bloat checks as script 03 (verified
+# against queries/slow-queries/slow-queries-bloated-tables.sql):
+#   T-4 table_high_bloat     warning  — dead_tup_ratio > 0.30, total_tuples > 10000
+#   T-3 table_critical_bloat critical — dead_tup_ratio > 0.60
+#   AV-1/AV-2 (slow-queries-autovacuum-disabled.sql) — autovacuum_enabled=false
+#     (+ dead_tup_ratio > 0.20 for AV-2) — now fired deterministically, see below.
+# The oversized-index angle itself is diagnostic-only (surfaced by
+# 02_bloat_vacuum_diagnostic_sweep.sql), not independently hunter-detected.
+#
 # Usage:
 #   ./04_simulate_index_bloat.sh [row_count] [--yes]
 #
+# Defaults: row_count=1000000, 50 churn rounds (was 30) touching ~1/7 of rows
+# each round — with autovacuum now disabled, dead_tup ≈ 7,100,000 against
+# ~1,000,000 live rows (ratio ≈ 0.88), well past the 0.60 CRITICAL floor.
+#
 # Example:
-#   ./04_simulate_index_bloat.sh 500000
+#   ./04_simulate_index_bloat.sh 1000000
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-500000}"
+ROW_COUNT="${1:-1000000}"
 
-confirm_drill "This creates a dedicated index_bloat_drill table (${ROW_COUNT} rows) with 4 indexes, then churns it with updates so the indexes bloat relative to the table." "$@"
+confirm_drill "This creates a dedicated index_bloat_drill table (${ROW_COUNT} rows) with 4 indexes, disables autovacuum on it, then churns it with updates so both the indexes and the table itself bloat." "$@"
 
 echo ""
 echo "=== DRILL: Index Bloat After Repeated Updates (Investigation Guide §3.8 / Issue Guide §3.3-Scenario2) ==="
@@ -53,16 +71,18 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -v ON_ERROR
          CREATE INDEX IF NOT EXISTS idx_index_bloat_drill_status  ON index_bloat_drill(status);
          CREATE INDEX IF NOT EXISTS idx_index_bloat_drill_created ON index_bloat_drill(created_at);
          CREATE INDEX IF NOT EXISTS idx_index_bloat_drill_payload ON index_bloat_drill(payload);
-         ANALYZE index_bloat_drill;"
+         ANALYZE index_bloat_drill;
+         ALTER TABLE index_bloat_drill SET (autovacuum_enabled = false);"
 
 echo ""
-echo "--- Churning: repeated UPDATEs touching all indexed columns ---"
+echo "--- Churning: repeated UPDATEs touching all indexed columns (autovacuum disabled"
+echo "    on this table, so accumulated bloat is never quietly reclaimed) ---"
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -v ON_ERROR_STOP=1 \
      -c "SET application_name = 'drill_index_bloat';
          DO \$\$
          DECLARE i int;
          BEGIN
-             FOR i IN 1..30 LOOP
+             FOR i IN 1..50 LOOP
                  UPDATE index_bloat_drill
                  SET status = md5(random()::text), payload = repeat(md5(random()::text), 50)
                  WHERE id % 7 = 0;

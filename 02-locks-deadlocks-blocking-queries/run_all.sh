@@ -3,17 +3,29 @@
 # run_all.sh — Locks, Deadlocks & Blocking Queries: automated end-to-end run
 # SysCloud DAL Team
 #
-# AGGRESSIVE MODE: setup runs once, then all 15 drills in this folder launch
+# EXTREME MODE: setup runs once, then all 15 drills in this folder launch
 # CONCURRENTLY (not one at a time) against the shared lock_test_* tables to
 # stack simultaneous lock contention/deadlocks and stress the target as hard
 # as possible, then the triage sweep + automated RCA run once every drill has
 # finished. Individual scripts remain the source of truth; this just
-# launches them with aggressive-by-default sizing and a pass/fail summary.
+# launches them with extreme-by-default sizing and a pass/fail summary.
 #
 # No mitigation/cleanup step, no confirmation gate: drills fire immediately
 # and drill sessions/tables are left in place so the hunters have a real
-# window to detect them. Every drill guarantees at least a 90s minimum
-# observation window (see ensure_min_duration in _lib/env.sh).
+# window to detect them. Every drill guarantees at least a 900s hold
+# (3 ticks of overlap on the hunter's 300s poll interval,
+# actions/locks-deadlocks-blocking-queries.jsonc), clearing every duration
+# threshold in that jsonc (idle-in-txn 300s, prepared-xact 300s) with wide
+# margin — see ensure_min_duration in _lib/env.sh for the floor mechanism and
+# each script's own header for the specific threshold(s) it clears.
+#
+# CEILING WARNING: SysCloud baseline session settings (runbook §7.3) are
+# deadlock_timeout=15s, lock_timeout=10s, idle_in_transaction_session_timeout=60s,
+# statement_timeout=5min. Every drill script in this folder now explicitly
+# disables the relevant ones for its own sessions (holders: statement_timeout +
+# idle_in_transaction_session_timeout; waiters: statement_timeout + lock_timeout) —
+# without that, the 900s holds above would be self-defeating, killed by the
+# server itself long before any hunter threshold is reached.
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Same rules as every script in this folder.
 #
@@ -21,10 +33,11 @@
 #   ./run_all.sh [--fast|--full] [--only 03,07] [--skip 16]
 #                [--list] [--yes]
 #
-#   --fast        Small hold durations (default) — every drill still gets a
-#                  30s minimum observation window (see ensure_min_duration in
-#                  _lib/env.sh); full manifest finishes in a few minutes.
-#   --full        Doc-example scale (matches README quick-start numbers).
+#   --fast        Extreme scale (default) — every drill still gets at least
+#                  a 900s hold; full manifest finishes in well under 20 min
+#                  since drills run concurrently, not sequentially.
+#   --full        Even more extreme still (longer holds, deeper amplification
+#                  fan-out, larger connection flood).
 #   --only 03,07  Only run these drill/detection ids (comma list).
 #   --skip 16     Skip these ids (16 overlaps topic 01's connection-exhaustion
 #                  drills — skip it here if you're running both topics back
@@ -67,9 +80,9 @@ done
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-./run_all_logs/$(date +%Y%m%d_%H%M%S 2>/dev/null || echo run)}"
 
 if [[ "${FAST}" -eq 1 ]]; then
-    HOLD=90; DML_HOLD=60; CONN_COUNT_16=100
+    HOLD=900; DML_HOLD=900; CONN_COUNT_16=100; LQA_WAITERS=12; IDLE_BLOCKERS=5
 else
-    HOLD=180; DML_HOLD=90; CONN_COUNT_16=300
+    HOLD=1800; DML_HOLD=1800; CONN_COUNT_16=300; LQA_WAITERS=20; IDLE_BLOCKERS=8
 fi
 
 echo "=== Locks, Deadlocks & Blocking Queries — run_all.sh (${MODE_LABEL}) ==="
@@ -86,14 +99,14 @@ bg_step "05" "DDL (CREATE INDEX) blocks DML cascade"       ./05_simulate_ddl_blo
 bg_step "06" "Advisory lock blocking"                      ./06_simulate_advisory_lock.sh 42 "${HOLD}" "${YES_FLAG[@]}"
 bg_step "07" "Credits multi-module deadlock (buggy)"       ./07_simulate_credits_deadlock.sh buggy "${YES_FLAG[@]}"
 bg_step "08" "MVW REFRESH blocking lock"                   ./08_simulate_mvw_refresh_lock.sh blocking no "${YES_FLAG[@]}"
-bg_step "11" "Idle-in-transaction indefinite blocker"      ./11_simulate_idle_in_transaction.sh 1 "${HOLD}" "${YES_FLAG[@]}"
+bg_step "11" "Idle-in-transaction indefinite blocker"      ./11_simulate_idle_in_transaction.sh 3 "${HOLD}" "${IDLE_BLOCKERS}" "${YES_FLAG[@]}"
 bg_step "12" "Long transaction blocks vacuum (dead tuples)" ./12_simulate_long_txn_vacuum_bloat.sh "${HOLD}" "${YES_FLAG[@]}"
 bg_step "13" "FK contention (child_blocks_parent)"         ./13_simulate_fk_contention.sh child_blocks_parent "${HOLD}" "${YES_FLAG[@]}"
 bg_step "14" "VACUUM FULL AccessExclusiveLock"             ./14_simulate_vacuum_full_blocking.sh vacuum_full_blocks_dml "${YES_FLAG[@]}"
 bg_step "15" "Non-concurrent CREATE INDEX blocks DML"      ./15_simulate_index_blocking.sh "${DML_HOLD}" "${YES_FLAG[@]}"
 bg_step "16" "Connection exhaustion (idle flood, in-folder demo)" ./16_simulate_connection_exhaustion.sh idle_connection_flood "${CONN_COUNT_16}" "${HOLD}" "${YES_FLAG[@]}"
 bg_step "17" "Stuck worker workflow blockage"              ./17_simulate_workflow_blockage.sh stuck_worker "${HOLD}" "${YES_FLAG[@]}"
-bg_step "18" "Lock queue amplification (A→B→C→D→E)"        ./18_simulate_lock_queue_amplification.sh "${DML_HOLD}" "${YES_FLAG[@]}"
+bg_step "18" "Lock queue amplification (A→B→${LQA_WAITERS} waiters)" ./18_simulate_lock_queue_amplification.sh "${DML_HOLD}" "${LQA_WAITERS}" "${YES_FLAG[@]}"
 wait_bg_steps
 
 psql_always_step "09" "Lock triage sweep (blocking tree, chains, deadlocks)" -f 09_lock_triage_queries.sql
