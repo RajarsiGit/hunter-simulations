@@ -103,5 +103,5 @@ echo "sample size:"
 echo "  ALTER TABLE bloat_drill_records ALTER COLUMN tenant_id SET STATISTICS 1000;"
 echo "  ANALYZE bloat_drill_records;"
 echo ""
-ensure_min_duration 90
+ensure_min_duration 20
 echo "Drill complete."

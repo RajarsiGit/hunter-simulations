@@ -107,5 +107,5 @@ echo "  ALTER TABLE bloat_drill_records SET ("
 echo "      autovacuum_vacuum_scale_factor = 0.02, autovacuum_vacuum_threshold = 5000,"
 echo "      autovacuum_analyze_scale_factor = 0.01, autovacuum_analyze_threshold = 5000);"
 echo ""
-ensure_min_duration 90
+ensure_min_duration 20
 echo "Drill complete."

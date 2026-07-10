@@ -107,5 +107,5 @@ echo ""
 echo "For fillfactor-tuned hot-update tables: ALTER TABLE ... SET (fillfactor = 80);"
 echo "(requires a VACUUM FULL / table rewrite to take effect on existing data)."
 echo ""
-ensure_min_duration 90
+ensure_min_duration 20
 echo "Drill complete."

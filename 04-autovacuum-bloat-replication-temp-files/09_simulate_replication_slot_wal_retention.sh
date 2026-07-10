@@ -111,6 +111,6 @@ echo "--- Remediation: drop the slot ONLY after confirming no consumer needs it 
 echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
 echo "    -c \"SELECT pg_drop_replication_slot('${SLOT_NAME}');\""
 echo ""
-ensure_min_duration 90
+ensure_min_duration 20
 echo "Drill leaves the slot in place (never dropped) so the hunter has a real window"
 echo "to detect the retained WAL."

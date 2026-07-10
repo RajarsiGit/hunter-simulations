@@ -90,5 +90,5 @@ echo "In production, prefer CREATE INDEX CONCURRENTLY to avoid blocking writers 
 echo "see ../02-locks-deadlocks-blocking-queries/05_simulate_ddl_blocking_dml.sh for the"
 echo "DDL-blocks-DML angle of non-concurrent index builds."
 echo ""
-ensure_min_duration 90
+ensure_min_duration 20
 echo "Drill complete."
