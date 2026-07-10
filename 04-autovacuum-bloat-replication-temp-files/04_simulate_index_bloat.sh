@@ -32,18 +32,20 @@
 # Usage:
 #   ./04_simulate_index_bloat.sh [row_count] [--yes]
 #
-# Defaults: row_count=1000000, 50 churn rounds (was 30) touching ~1/7 of rows
-# each round — with autovacuum now disabled, dead_tup ≈ 7,100,000 against
-# ~1,000,000 live rows (ratio ≈ 0.88), well past the 0.60 CRITICAL floor.
+# Defaults: row_count=100000, 50 churn rounds touching ~1/7 of rows each
+# round — sized so the whole drill finishes in well under 20s. With
+# autovacuum disabled, dead_tup ≈ 710,000 against ~100,000 live rows
+# (ratio ≈ 0.88), still well past the 0.60 CRITICAL floor. Pass a larger
+# row_count for a slower drill with wider threshold margin.
 #
 # Example:
-#   ./04_simulate_index_bloat.sh 1000000
+#   ./04_simulate_index_bloat.sh 100000
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-1000000}"
+ROW_COUNT="${1:-100000}"
 
 confirm_drill "This creates a dedicated index_bloat_drill table (${ROW_COUNT} rows) with 4 indexes, disables autovacuum on it, then churns it with updates so both the indexes and the table itself bloat." "$@"
 
@@ -77,6 +79,11 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -v ON_ERROR
 echo ""
 echo "--- Churning: repeated UPDATEs touching all indexed columns (autovacuum disabled"
 echo "    on this table, so accumulated bloat is never quietly reclaimed) ---"
+# No COMMIT inside the DO block: anonymous PL/pgSQL blocks cannot run
+# transaction-control statements (only CALL-invoked procedures can) — an
+# intermediate COMMIT here raises "invalid transaction termination". Not
+# needed anyway: MVCC already makes each round's prior tuple version dead as
+# soon as the next UPDATE in the same session supersedes it.
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -v ON_ERROR_STOP=1 \
      -c "SET application_name = 'drill_index_bloat';
          DO \$\$
@@ -86,7 +93,6 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -v ON_ERROR
                  UPDATE index_bloat_drill
                  SET status = md5(random()::text), payload = repeat(md5(random()::text), 50)
                  WHERE id % 7 = 0;
-                 COMMIT;
              END LOOP;
          END \$\$;"
 
@@ -107,5 +113,5 @@ echo ""
 echo "For fillfactor-tuned hot-update tables: ALTER TABLE ... SET (fillfactor = 80);"
 echo "(requires a VACUUM FULL / table rewrite to take effect on existing data)."
 echo ""
-ensure_min_duration 20
+ensure_min_duration 10
 echo "Drill complete."

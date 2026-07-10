@@ -43,11 +43,12 @@
 # Usage:
 #   ./09_simulate_replication_slot_wal_retention.sh [row_count] [--yes]
 #
-# Default row_count=6000000 (was 2000000) — payload is repeat(md5(),100) =
-# 3200 bytes/row, so 6M rows is ~19.2 GiB of row data alone; WAL volume for
-# a bulk insert this size (full-page images etc.) comfortably clears the
-# 10 GiB RS-2 critical floor with margin, vs. the old default's ~6.4 GiB
-# which sat awkwardly close to but not reliably past it.
+# Default row_count=500000, sized so the whole drill finishes in well under
+# 20s — payload is repeat(md5(),100) = 3200 bytes/row, so 500k rows is
+# ~1.6 GiB of row data alone, comfortably clearing RS-1's 1 GiB warning floor
+# but NOT RS-2's 10 GiB critical floor (that needs ~3.2M+ rows, well past a
+# 20s budget). Pass a larger row_count if you need RS-2 margin and can accept
+# a longer run.
 #
 # Note: this creates a REAL logical replication slot. If your instance
 # already tracks replication slots for legitimate consumers (DMS, Debezium,
@@ -58,7 +59,7 @@
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-6000000}"
+ROW_COUNT="${1:-500000}"
 SLOT_NAME="drill_inactive_slot"
 
 confirm_drill "This creates a logical replication slot named '${SLOT_NAME}' (never consumed) and generates ${ROW_COUNT} rows of WAL-producing writes to show retained_wal growing." "$@"
@@ -66,6 +67,18 @@ confirm_drill "This creates a logical replication slot named '${SLOT_NAME}' (nev
 echo ""
 echo "=== DRILL: Inactive Replication Slot Retains WAL (Investigation Guide §4.7 / Scenario B3) ==="
 echo "Target: ${PGHOST}:${PGPORT}/${PGDATABASE} | slot=${SLOT_NAME} | rows=${ROW_COUNT}"
+
+echo ""
+echo "--- Checking max_replication_slots (must be > 0 on this instance/parameter group) ---"
+MAX_SLOTS=$(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -tAc \
+     "SHOW max_replication_slots;")
+if [[ "${MAX_SLOTS}" -eq 0 ]]; then
+    echo "  ERROR: max_replication_slots=0 on this instance — logical replication"
+    echo "  slots are disabled at the parameter-group level, so this drill CANNOT"
+    echo "  run here. Raise max_replication_slots (>=1) in the RDS parameter group"
+    echo "  and reboot the instance if required, then re-run this drill."
+    exit 1
+fi
 
 echo ""
 echo "--- Creating the (intentionally unconsumed) logical replication slot ---"
@@ -111,6 +124,6 @@ echo "--- Remediation: drop the slot ONLY after confirming no consumer needs it 
 echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
 echo "    -c \"SELECT pg_drop_replication_slot('${SLOT_NAME}');\""
 echo ""
-ensure_min_duration 20
+ensure_min_duration 10
 echo "Drill leaves the slot in place (never dropped) so the hunter has a real window"
 echo "to detect the retained WAL."

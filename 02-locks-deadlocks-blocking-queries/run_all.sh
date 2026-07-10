@@ -3,29 +3,29 @@
 # run_all.sh — Locks, Deadlocks & Blocking Queries: automated end-to-end run
 # SysCloud DAL Team
 #
-# EXTREME MODE: setup runs once, then all 15 drills in this folder launch
+# FAST MODE: setup runs once, then all 15 drills in this folder launch
 # CONCURRENTLY (not one at a time) against the shared lock_test_* tables to
-# stack simultaneous lock contention/deadlocks and stress the target as hard
-# as possible, then the triage sweep + automated RCA run once every drill has
-# finished. Individual scripts remain the source of truth; this just
-# launches them with extreme-by-default sizing and a pass/fail summary.
+# stack simultaneous lock contention/deadlocks and stress the target briefly,
+# then the triage sweep + automated RCA run once every drill has finished.
+# Individual scripts remain the source of truth; this just launches them
+# with fast-by-default sizing and a pass/fail summary.
 #
 # No mitigation/cleanup step, no confirmation gate: drills fire immediately
-# and drill sessions/tables are left in place so the hunters have a real
-# window to detect them. Every drill guarantees at least a 900s hold
-# (3 ticks of overlap on the hunter's 300s poll interval,
-# actions/locks-deadlocks-blocking-queries.jsonc), clearing every duration
-# threshold in that jsonc (idle-in-txn 300s, prepared-xact 300s) with wide
-# margin — see ensure_min_duration in _lib/env.sh for the floor mechanism and
-# each script's own header for the specific threshold(s) it clears.
+# and drill sessions/tables are left in place so they can be inspected
+# afterward. Every drill now defaults to a short hold (~6-8s) so the whole
+# manifest completes in well under 20s per drill — this is NOT sized to clear
+# the hunter's 300s poll interval (actions/locks-deadlocks-blocking-queries.jsonc)
+# any more; see ensure_min_duration in _lib/env.sh for the floor mechanism
+# (now capped at 12s here) and each script's own header for what value to
+# pass instead if you need reliable hunter-detection timing.
 #
 # CEILING WARNING: SysCloud baseline session settings (runbook §7.3) are
 # deadlock_timeout=15s, lock_timeout=10s, idle_in_transaction_session_timeout=60s,
-# statement_timeout=5min. Every drill script in this folder now explicitly
+# statement_timeout=5min. Every drill script in this folder still explicitly
 # disables the relevant ones for its own sessions (holders: statement_timeout +
-# idle_in_transaction_session_timeout; waiters: statement_timeout + lock_timeout) —
-# without that, the 900s holds above would be self-defeating, killed by the
-# server itself long before any hunter threshold is reached.
+# idle_in_transaction_session_timeout; waiters: statement_timeout + lock_timeout;
+# deadlock scripts additionally SET deadlock_timeout='2s') so the short holds
+# above aren't cut even shorter by the server's own baseline timeouts.
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Same rules as every script in this folder.
 #
@@ -33,11 +33,11 @@
 #   ./run_all.sh [--fast|--full] [--only 03,07] [--skip 16]
 #                [--list] [--yes]
 #
-#   --fast        Extreme scale (default) — every drill still gets at least
-#                  a 900s hold; full manifest finishes in well under 20 min
-#                  since drills run concurrently, not sequentially.
-#   --full        Even more extreme still (longer holds, deeper amplification
-#                  fan-out, larger connection flood).
+#   --fast        Fast scale (default) — every drill holds ~6-8s; full
+#                  manifest finishes in well under 20s per drill since drills
+#                  run concurrently, not sequentially.
+#   --full        Slightly larger fan-out (more waiters/connections/blockers)
+#                  but still capped to the same short holds.
 #   --only 03,07  Only run these drill/detection ids (comma list).
 #   --skip 16     Skip these ids (16 overlaps topic 01's connection-exhaustion
 #                  drills — skip it here if you're running both topics back
@@ -80,9 +80,9 @@ done
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-./run_all_logs/$(date +%Y%m%d_%H%M%S 2>/dev/null || echo run)}"
 
 if [[ "${FAST}" -eq 1 ]]; then
-    HOLD=900; DML_HOLD=900; CONN_COUNT_16=100; LQA_WAITERS=12; IDLE_BLOCKERS=5
+    HOLD=8; DML_HOLD=6; CONN_COUNT_16=20; LQA_WAITERS=12; IDLE_BLOCKERS=5
 else
-    HOLD=1800; DML_HOLD=1800; CONN_COUNT_16=300; LQA_WAITERS=20; IDLE_BLOCKERS=8
+    HOLD=10; DML_HOLD=8; CONN_COUNT_16=40; LQA_WAITERS=20; IDLE_BLOCKERS=8
 fi
 
 echo "=== Locks, Deadlocks & Blocking Queries — run_all.sh (${MODE_LABEL}) ==="

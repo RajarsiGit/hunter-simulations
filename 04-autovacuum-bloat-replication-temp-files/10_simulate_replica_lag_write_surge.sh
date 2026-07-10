@@ -32,15 +32,18 @@
 #   ./10_simulate_replica_lag_write_surge.sh [row_count] [--yes]
 #   REPLICA_PGHOST=<read-replica-endpoint> ./10_simulate_replica_lag_write_surge.sh 8000000
 #
-# Default row_count=8000000 (was 3000000) — bigger write surge for a better
-# shot at clearing R-2's 1 GiB critical floor IF a replica is attached; has
-# no effect on whether R-1/R-2 can fire at all (see LIMITATION above).
+# Default row_count=100000, sized so the whole drill finishes in well under
+# 20s. Without an attached replica this row count doesn't matter at all (see
+# LIMITATION above — R-1/R-2 can never fire regardless). If you DO have
+# REPLICA_PGHOST set and need a realistic shot at R-2's 1 GiB critical floor,
+# pass a much larger row_count explicitly (e.g. 8000000) and accept a longer
+# run — the small default here is not tuned for that case.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-8000000}"
+ROW_COUNT="${1:-100000}"
 REPLICA_PGHOST="${REPLICA_PGHOST:-}"
 REPLICA_PGUSER="${REPLICA_PGUSER:-${PGUSER}}"
 REPLICA_PGDATABASE="${REPLICA_PGDATABASE:-${PGDATABASE}}"
@@ -100,5 +103,5 @@ echo "class if replay genuinely can't keep up, or route analytical reads off the
 echo "lagging replica. For a long-running query stalling replay on the replica"
 echo "itself (Scenario B2), cancel it there: SELECT pg_cancel_backend(<pid>);"
 echo ""
-ensure_min_duration 20
+ensure_min_duration 10
 echo "Drill complete."

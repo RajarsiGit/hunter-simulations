@@ -27,11 +27,10 @@
 #   ./13_simulate_fk_contention.sh [mode] [hold_seconds] [--yes]
 #
 # mode: child_blocks_parent (default) | parent_blocks_child
-# Default: hold_seconds=900 — clears the hunter's 300s poll interval
-# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap so
-# FK-1 fk_contention_detected (waiter_count>=1 on a ShareRowExclusiveLock,
-# queries/locks-deadlocks-blocking-queries/fk-contention.sql) is reliably
-# sampled while Session B is queued.
+# Default: hold_seconds=8 — sized so the whole drill completes in well under
+# 20s for fast local/CI drilling. This is short of the hunter's 300s poll
+# interval, so it is NOT reliable for hunter-detection runs (FK-1
+# fk_contention_detected) — pass a larger hold_seconds (e.g. 900) for that.
 #
 # CEILING WARNING: SysCloud baseline (runbook §7.3) lock_timeout=10s and
 # statement_timeout=5min would otherwise abort Session B almost immediately
@@ -44,7 +43,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 MODE="${1:-child_blocks_parent}"
-HOLD_SECONDS="${2:-900}"
+HOLD_SECONDS="${2:-8}"
 
 if [[ "${MODE}" != "child_blocks_parent" && "${MODE}" != "parent_blocks_child" ]]; then
     echo "Usage: $0 [child_blocks_parent|parent_blocks_child] [hold_seconds] [--yes]"
@@ -175,5 +174,5 @@ echo "  ON lock_test_child(parent_id); -- already in drill setup"
 echo ""
 echo "Session A releases after ${HOLD_SECONDS}s. Waiting..."
 wait
-ensure_min_duration 30
+ensure_min_duration 12
 echo "All drill sessions completed."

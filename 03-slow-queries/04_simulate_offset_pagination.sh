@@ -15,15 +15,16 @@
 # Usage:
 #   ./04_simulate_offset_pagination.sh [deep_offset]
 #
-# Defaults: deep_offset=9000000 (extreme — walks/discards nine million rows
-# on every EXPLAIN; slowq_orders is seeded at 12M rows in 01_setup so this
-# stays within range with margin)
+# Defaults: deep_offset=100000 (walks/discards a hundred thousand rows on
+# every EXPLAIN; slowq_orders is seeded at 200k rows in 01_setup so this
+# stays within range with margin). Sized for a <=20s drill run, not to
+# maximize the cost gap between OFFSET and keyset pagination.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-DEEP_OFFSET="9000000"
+DEEP_OFFSET="100000"
 for arg in "$@"; do
     [[ "${arg}" =~ ^[0-9]+$ ]] && DEEP_OFFSET="${arg}"
 done
@@ -59,19 +60,16 @@ echo "      the WHERE clause instead of walking OFFSET rows."
                   ORDER BY created_at DESC LIMIT 50;"
 
 echo ""
-echo "--- Sustaining load so the slow-queries hunter can actually observe it ---"
+echo "--- Sustaining load briefly so pg_stat_activity/seq_scan show a signal ---"
 echo "    A single EXPLAIN above finishes in well under a second and only bumps"
-echo "    seq_scan by 1 — nowhere near what the live hunter needs. duration_seconds"
-echo "    is measured from this statement's query_start, so a 2400s hold clears"
-echo "    not just query_slow's >=30s warning threshold but query_critical's"
-echo "    >=1800s CRITICAL threshold too (actions/slow-queries.jsonc Q-2), with"
-echo "    600s to spare over the hunter's 300s poll interval (>=7 ticks of"
-echo "    overlap — EXTREME margin). Also bursts 200000 seq scans"
-echo "    (seq_scan_tables, >1000 threshold, ratio>0.80) so that check fires hard too."
+echo "    seq_scan by 1. This holds the session active for a few seconds and"
+echo "    bursts a few hundred repeats of the OFFSET query (each one itself"
+echo "    walks/discards ${DEEP_OFFSET} rows, so the iteration count is kept low"
+echo "    to stay within a <=20s drill run) so a quick poll can catch it."
 hold_session_active "drill_offset_pagination" \
-    "SELECT * FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 2400
+    "SELECT * FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 5
 run_seq_scan_burst "drill_offset_pagination" \
-    "1 FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 200000
+    "1 FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 200
 wait "${HOLD_PID}" 2>/dev/null || true
 
 echo ""

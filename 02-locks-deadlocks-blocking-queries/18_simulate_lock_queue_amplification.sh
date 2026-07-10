@@ -23,8 +23,8 @@
 #
 # Drill sequence:
 #   t=0s   Session A: BEGIN; UPDATE (holds lock for DML_HOLD seconds)
-#   t=5s   Session B: ALTER TABLE ... ADD COLUMN → queues behind A
-#   t=8s   Sessions C..N (WAITER_COUNT of them): simple UPDATEs/SELECTs →
+#   t=2s   Session B: ALTER TABLE ... ADD COLUMN → queues behind A
+#   t=3s   Sessions C..N (WAITER_COUNT of them): simple UPDATEs/SELECTs →
 #          queue behind B (NOT behind A). These would succeed normally if B
 #          were not in the queue.
 #
@@ -38,10 +38,12 @@
 # Usage:
 #   ./18_simulate_lock_queue_amplification.sh [dml_hold_seconds] [waiter_count] [--yes]
 #
-# Defaults: dml_hold_seconds=900, waiter_count=12.
+# Defaults: dml_hold_seconds=6, waiter_count=12.
 #
-# dml_hold_seconds=900 clears the hunter's 300s poll interval
-# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap.
+# dml_hold_seconds=6 is sized so the whole drill completes in well under 20s
+# for fast local/CI drilling. This is short of the hunter's 300s poll
+# interval, so it is NOT reliable for hunter-detection runs — pass a larger
+# dml_hold_seconds (e.g. 900) for that.
 #
 # waiter_count=12 (was a fixed 3 — Sessions C/D/E) is the key fix: blocking_summary
 # (queries/locks-deadlocks-blocking-queries/blocking-summary.sql) caps root
@@ -63,14 +65,14 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-DML_HOLD="${1:-900}"
+DML_HOLD="${1:-6}"
 WAITER_COUNT="${2:-12}"
 
 echo "=== DRILL: Lock Queue Amplification ==="
 echo "Target          : ${PGHOST}:${PGPORT}/${PGDATABASE}"
 echo "Session A (DML) : UPDATE held for ${DML_HOLD}s"
-echo "Session B (DDL) : ALTER TABLE — starts t=5s, queues behind A"
-echo "Waiters         : ${WAITER_COUNT} independent DML/SELECT sessions — start t=8s, queue behind B"
+echo "Session B (DDL) : ALTER TABLE — starts t=2s, queues behind A"
+echo "Waiters         : ${WAITER_COUNT} independent DML/SELECT sessions — start t=3s, queue behind B"
 echo ""
 echo "⚠️  Requires lock_test_accounts (run 01_setup_lock_drill_tables.sql first)."
 confirm_drill "Runs 1 old DML + 1 queuing ALTER TABLE that ends up blocking ${WAITER_COUNT} unrelated DML/SELECT sessions." "$@"
@@ -81,7 +83,7 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      2>/dev/null || true
 
 echo ""
-echo "--- Session A (t=0): long UPDATE — holds RowExclusiveLock for ${DML_HOLD}s ---"
+echo "--- Session A (t=0s): long UPDATE — holds RowExclusiveLock for ${DML_HOLD}s ---"
 echo "    This is the 'innocent' transaction that starts the chain."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
@@ -96,10 +98,10 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
 PID_A=$!
 echo "  Session A spawned (shell pid ${PID_A})"
 
-sleep 5
+sleep 2
 
 echo ""
-echo "--- Session B (t=5s): ALTER TABLE — needs ACCESS EXCLUSIVE, queues behind A ---"
+echo "--- Session B (t=2s): ALTER TABLE — needs ACCESS EXCLUSIVE, queues behind A ---"
 echo "    Once A finishes, B will hold ACCESS EXCLUSIVE and block ALL subsequent DML."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
@@ -111,10 +113,10 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
 PID_B=$!
 echo "  Session B spawned (shell pid ${PID_B}) — queuing behind Session A"
 
-sleep 3
+sleep 1
 
 echo ""
-echo "--- Waiters (t=8s): ${WAITER_COUNT} independent DML/SELECT sessions — queue behind Session B's DDL ---"
+echo "--- Waiters (t=3s): ${WAITER_COUNT} independent DML/SELECT sessions — queue behind Session B's DDL ---"
 echo "    None of these conflict with Session A's lock directly."
 echo "    They are blocked solely because Session B is ahead in the lock queue."
 
@@ -173,5 +175,5 @@ echo ""
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "ALTER TABLE lock_test_accounts DROP COLUMN IF EXISTS queue_amplification_drill;" \
      2>/dev/null || true
-ensure_min_duration 30
+ensure_min_duration 12
 echo "Drill column cleaned up. Drill complete."

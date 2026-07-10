@@ -22,11 +22,11 @@
 # Usage:
 #   ./02_simulate_row_lock_blocking.sh [row_id] [hold_seconds] [--yes]
 #
-# Defaults: row_id=1, hold_seconds=900 — clears TWO real thresholds from
-# actions/locks-deadlocks-blocking-queries.jsonc with wide margin: the 300s
-# poll interval (so a poll tick is guaranteed to land mid-hold regardless of
-# phase — 900s gives 3 full ticks of overlap) AND LB-3 idle_in_transaction_critical's
-# blocker_idle_age_seconds >= 300s threshold (600s margin).
+# Defaults: row_id=1, hold_seconds=8 — sized so the whole drill completes in
+# well under 20s for fast local/CI drilling. This is short of the hunter's
+# 300s poll interval and LB-3 idle_in_transaction_critical's 300s threshold,
+# so it is NOT reliable for hunter-detection runs — pass a larger hold_seconds
+# (e.g. 900) for that.
 #
 # CEILING WARNING: SysCloud baseline session settings (jsonc verdict text,
 # runbook §7.3) are deadlock_timeout=15s, lock_timeout=10s,
@@ -47,7 +47,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 ROW_ID="${1:-1}"
-HOLD_SECONDS="${2:-900}"
+HOLD_SECONDS="${2:-8}"
 
 echo "=== DRILL: Row-Level Lock Blocking ==="
 echo "Target  : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -120,5 +120,5 @@ echo "    -f 09_lock_triage_queries.sql"
 echo ""
 echo "Session A will auto-release after ${HOLD_SECONDS}s. Waiting for drill to complete..."
 wait
-ensure_min_duration 30
+ensure_min_duration 12
 echo "All drill sessions have completed."

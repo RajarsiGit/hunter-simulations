@@ -46,13 +46,19 @@
 # Usage:
 #   ./07_simulate_temp_file_spill.sh <sort|hash_join|group_by> [row_count] [--yes]
 #
-# Defaults (was sort/group_by=5000000, hash_join=2000000):
-#   sort/group_by row_count=8000000, hash_join row_count=4000000
+# Defaults, sized so the whole drill finishes in well under 20s: sort/group_by
+# row_count=600000, hash_join row_count=300000 (per side). work_mem='1MB'
+# still forces a disk spill at this scale, comfortably clearing TF-1's 1 GiB/h
+# warning floor — but NOT independently reaching TF-2's 25 GiB/h critical
+# floor the way the old multi-million-row defaults could; per 07's own header,
+# TF-2 realistically needs several modes STACKED concurrently (see run_all.sh)
+# rather than one script alone, so this doesn't change what TF-2 needs. Pass
+# a larger row_count for more headroom above TF-1.
 #
 # Examples:
-#   ./07_simulate_temp_file_spill.sh sort 8000000
-#   ./07_simulate_temp_file_spill.sh hash_join 4000000
-#   ./07_simulate_temp_file_spill.sh group_by 8000000
+#   ./07_simulate_temp_file_spill.sh sort 600000
+#   ./07_simulate_temp_file_spill.sh hash_join 300000
+#   ./07_simulate_temp_file_spill.sh group_by 600000
 # =============================================================================
 
 set -euo pipefail
@@ -60,8 +66,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 MODE="${1:-sort}"
 case "${MODE}" in
-    sort|group_by) ROW_COUNT="${2:-8000000}" ;;
-    hash_join)     ROW_COUNT="${2:-4000000}" ;;
+    sort|group_by) ROW_COUNT="${2:-600000}" ;;
+    hash_join)     ROW_COUNT="${2:-300000}" ;;
     *) echo "Usage: $0 <sort|hash_join|group_by> [row_count] [--yes]"; exit 1 ;;
 esac
 
@@ -171,5 +177,5 @@ echo ""
 echo "Memory risk formula before raising work_mem globally:"
 echo "  worst_case_memory ≈ active_connections × work_mem × sort/hash_nodes_per_query"
 echo ""
-ensure_min_duration 20
+ensure_min_duration 10
 echo "Drill complete (mode=${MODE})."

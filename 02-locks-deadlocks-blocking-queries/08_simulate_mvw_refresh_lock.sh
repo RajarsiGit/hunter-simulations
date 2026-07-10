@@ -80,19 +80,20 @@ echo ""
 echo "--- Session A: REFRESH MATERIALIZED VIEW${MODE:+ }${MODE/blocking/}${MODE/concurrent/ CONCURRENTLY} ---"
 
 if [[ "${MODE}" == "blocking" ]]; then
-    # Blocking refresh: holds AccessExclusiveLock for 900s via pg_sleep before
-    # COMMIT — bumped from 600s to clear the hunter's 300s poll interval
-    # (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap,
-    # so DC-1 ddl_blocking_detected reliably samples Session B waiting.
+    # Blocking refresh: holds AccessExclusiveLock for 8s via pg_sleep before
+    # COMMIT — sized so the whole drill completes in well under 20s for fast
+    # local/CI drilling. This is short of the hunter's 300s poll interval, so
+    # it is NOT reliable for hunter-detection runs (DC-1 ddl_blocking_detected)
+    # — bump this back up (e.g. 900) for that.
     # statement_timeout=0 disables the SysCloud baseline 5min statement_timeout
-    # (runbook §7.3) for this session only, so the 900s hold isn't cut short.
+    # (runbook §7.3) for this session only, so the hold isn't cut short.
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_mvw_refresh';
              SET statement_timeout = 0;
              SET idle_in_transaction_session_timeout = 0;
              BEGIN;
              REFRESH MATERIALIZED VIEW lock_test_mvw;
-             SELECT pg_sleep(900);
+             SELECT pg_sleep(8);
              COMMIT;" \
          2>&1 | sed 's#^#  [Session A / refresh] #' &
 else
@@ -152,6 +153,6 @@ if [[ "${INJECT_DUP}" == "yes" ]]; then
     echo "  Duplicate removed. REFRESH CONCURRENTLY should now succeed."
 fi
 
-ensure_min_duration 30
+ensure_min_duration 12
 echo ""
 echo "Drill complete."

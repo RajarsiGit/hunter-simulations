@@ -39,14 +39,15 @@
 # Usage:
 #   ./06_simulate_stale_statistics_bad_plan.sh [row_count] [--yes]
 #
-# Default row_count=1000000 (was 500000) — 10x the ST-1/ST-2 n_live_tup >
-# 100000 pre-filter, wide margin.
+# Default row_count=150000 — sized so the whole drill finishes in well under
+# 20s while still clearing the ST-1/ST-2 n_live_tup > 100000 pre-filter with
+# some margin. Pass a larger row_count for wider margin.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-1000000}"
+ROW_COUNT="${1:-150000}"
 
 confirm_drill "This disables autovacuum/autoanalyze on bloat_drill_records, bulk-updates it so its data shape no longer matches planner statistics, and shows the resulting bad EXPLAIN plan. Autovacuum is left disabled and statistics left stale." "$@"
 
@@ -103,5 +104,5 @@ echo "sample size:"
 echo "  ALTER TABLE bloat_drill_records ALTER COLUMN tenant_id SET STATISTICS 1000;"
 echo "  ANALYZE bloat_drill_records;"
 echo ""
-ensure_min_duration 20
+ensure_min_duration 10
 echo "Drill complete."

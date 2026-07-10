@@ -151,7 +151,7 @@ if [[ "${MODE}" == "vacuum_full_blocks_dml" ]]; then
     echo ""
 
     wait
-    ensure_min_duration 30
+    ensure_min_duration 12
     echo "All drill sessions completed."
 
 else
@@ -170,11 +170,11 @@ else
              SET idle_in_transaction_session_timeout = 0;
              BEGIN ISOLATION LEVEL REPEATABLE READ;
              SELECT count(*) FROM lock_test_accounts;
-             SELECT pg_sleep(900);
+             SELECT pg_sleep(8);
              ROLLBACK;" &
     HOLDER_PID=$!
-    echo "  Session A spawned (shell pid ${HOLDER_PID}) — holds old snapshot (900s — not gated by"
-    echo "  a check in THIS hunter, bumped only for consistency with the folder's other drills)"
+    echo "  Session A spawned (shell pid ${HOLDER_PID}) — holds old snapshot (8s, sized for the"
+    echo "  20s drill ceiling — not gated by a check in THIS hunter)"
 
     sleep 2
 
@@ -184,7 +184,7 @@ else
          -c "SET application_name = 'drill_vacuum_workload';
              UPDATE lock_test_accounts SET balance = balance + 1;
              DELETE FROM lock_test_accounts WHERE id = 5;
-             SELECT pg_sleep(10);
+             SELECT pg_sleep(3);
              VACUUM (VERBOSE, ANALYZE) lock_test_accounts;" \
          2>&1 | sed 's/^/  [Session B] /'
 
@@ -208,8 +208,8 @@ else
     echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
     echo "    -f 09_lock_triage_queries.sql"
     echo ""
-    echo "Session A auto-releases after 900s. Waiting..."
+    echo "Session A auto-releases after 8s. Waiting..."
     wait
-    ensure_min_duration 30
+    ensure_min_duration 12
     echo "Drill complete."
 fi

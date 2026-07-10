@@ -32,13 +32,14 @@
 #   ./17_simulate_workflow_blockage.sh [mode] [hold_seconds] [--yes]
 #
 # mode: stuck_worker (default) | skip_locked_demo
-# Default: hold_seconds=900 — clears the hunter's 300s poll interval
-# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap.
-# Session B's FOR UPDATE wait feeds blocking_summary (LB-1 lock_blocking_warning
-# needs blocked_count>=3 — this drill alone only produces 1 waiter, so it
-# clears the top-5-root-blocker cap and is visible in the report but won't
-# reach LB-1/LB-2 severity on its own; run alongside 18 for a blocked_count
-# that crosses those thresholds).
+# Default: hold_seconds=8 — sized so the whole drill completes in well under
+# 20s for fast local/CI drilling. This is short of the hunter's 300s poll
+# interval, so it is NOT reliable for hunter-detection runs — pass a larger
+# hold_seconds (e.g. 900) for that. Session B's FOR UPDATE wait feeds
+# blocking_summary (LB-1 lock_blocking_warning needs blocked_count>=3 — this
+# drill alone only produces 1 waiter, so it clears the top-5-root-blocker cap
+# and is visible in the report but won't reach LB-1/LB-2 severity on its own;
+# run alongside 18 for a blocked_count that crosses those thresholds).
 #
 # CEILING WARNING: SysCloud baseline (runbook §7.3) lock_timeout=10s /
 # statement_timeout=5min would otherwise abort Session B almost immediately
@@ -51,7 +52,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 MODE="${1:-stuck_worker}"
-HOLD_SECONDS="${2:-900}"
+HOLD_SECONDS="${2:-8}"
 
 if [[ "${MODE}" != "stuck_worker" && "${MODE}" != "skip_locked_demo" ]]; then
     echo "Usage: $0 [stuck_worker|skip_locked_demo] [hold_seconds] [--yes]"
@@ -169,7 +170,7 @@ if [[ "${MODE}" == "stuck_worker" ]]; then
     echo ""
     echo "Session A releases after ${HOLD_SECONDS}s. Waiting..."
     wait
-    ensure_min_duration 30
+    ensure_min_duration 12
     echo "All drill sessions completed."
 
 else
@@ -210,7 +211,7 @@ else
     echo "--- Final job status (3 jobs claimed, none blocked each other) ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SELECT id, job_key, status, updated_at FROM lock_test_workflow_jobs ORDER BY id;"
-    ensure_min_duration 30
+    ensure_min_duration 12
     echo ""
     echo "SKIP LOCKED demo complete — workers never wait for each other."
 fi

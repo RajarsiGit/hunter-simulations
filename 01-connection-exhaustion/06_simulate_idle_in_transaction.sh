@@ -14,14 +14,12 @@
 # Usage:
 #   ./06_simulate_idle_in_transaction.sh [num_sessions] [hold_seconds] [target_table] [--yes]
 #
-# Defaults: num_sessions=200, hold_seconds=2400 (extreme — see actions/
-# connection-exhaustion.jsonc: these sessions count toward C-1/C-2's
-# connections_pct_used, >=80%/95% of max_connections, via connection-summary.sql;
-# 2400s clears the SQL's own idle_txn_over_5min marker (300s) 8x over and
-# overlaps the hunter's 300s poll interval for ~8 consecutive ticks instead of
-# risking a single boundary miss — the previous 300s default was exactly equal
-# to one poll tick, i.e. a coin flip on whether any tick landed inside the
-# window at all).
+# Defaults: num_sessions=200, hold_seconds=8 — capped for fast local drilling
+# (total run stays under ~20s). This is well under the hunter's 300s poll
+# interval, so hunter-detection reliability is NOT guaranteed at the default;
+# pass a larger hold_seconds explicitly (e.g. 2400, ~8 poll ticks of overlap
+# per actions/connection-exhaustion.jsonc's C-1/C-2 thresholds) if you need
+# this drill to be reliably observed by the AI-Hunters poller.
 #
 # Example: 5 sessions, each holding a row lock for 10 minutes, non-interactive
 #   ./06_simulate_idle_in_transaction.sh 5 600 my_test_table --yes
@@ -32,7 +30,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
 NUM_SESSIONS="${ARGS[0]:-200}"
-HOLD_SECONDS="${ARGS[1]:-2400}"
+HOLD_SECONDS="${ARGS[1]:-8}"
 TARGET_TABLE="${ARGS[2]:-}"
 
 echo "=== DRILL: Idle-in-Transaction Simulator ==="

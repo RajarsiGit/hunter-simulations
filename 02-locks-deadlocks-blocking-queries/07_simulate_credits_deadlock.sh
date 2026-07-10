@@ -75,24 +75,26 @@ if [[ "${MODE}" == "buggy" ]]; then
     echo "--- Module 1 (backup start): user 1 first, then user 2 ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_credits_module1';
+             SET deadlock_timeout = '2s';
              BEGIN;
              UPDATE lock_test_credits SET credits = credits - 50 WHERE user_id = 1;
-             SELECT pg_sleep(4);
+             SELECT pg_sleep(2);
              UPDATE lock_test_credits SET credits = credits + 10 WHERE user_id = 2;
              COMMIT;" \
          2>&1 | sed 's/^/  [Module 1] /' &
     PID1=$!
     echo "  Module 1 spawned (shell pid ${PID1})"
 
-    sleep 2
+    sleep 1
 
     echo ""
     echo "--- Module 2 (deletion): user 2 first, then user 1 (reverse order = deadlock) ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_credits_module2';
+             SET deadlock_timeout = '2s';
              BEGIN;
              UPDATE lock_test_credits SET credits = credits - 20 WHERE user_id = 2;
-             SELECT pg_sleep(4);
+             SELECT pg_sleep(2);
              UPDATE lock_test_credits SET credits = credits - 5  WHERE user_id = 1;
              COMMIT;" \
          2>&1 | sed 's/^/  [Module 2] /' &
@@ -101,7 +103,9 @@ if [[ "${MODE}" == "buggy" ]]; then
 
     echo ""
     echo "Deadlock cycle forming (same pattern as the production incident)."
-    echo "PostgreSQL will abort one module after deadlock_timeout (~15s)."
+    echo "Both sessions SET deadlock_timeout='2s' (production baseline is 15s,"
+    echo "runbook §7.3) so PostgreSQL aborts one module in a few seconds instead"
+    echo "of up to 15s — keeps this drill under the 20s ceiling."
     echo ""
     echo "Observe:"
     echo "  psql -h ${PGHOST} -p ${PGPORT} -U ${PGUSER} -d ${PGDATABASE} \\"
@@ -122,14 +126,14 @@ else
          -c "SET application_name = 'drill_credits_fixed_m1';
              BEGIN;
              UPDATE lock_test_credits SET credits = credits - 50 WHERE user_id = 1;
-             SELECT pg_sleep(4);
+             SELECT pg_sleep(2);
              UPDATE lock_test_credits SET credits = credits + 10 WHERE user_id = 2;
              COMMIT;" \
          2>&1 | sed 's/^/  [Module 1 fixed] /' &
     PID1=$!
     echo "  Module 1 spawned (shell pid ${PID1})"
 
-    sleep 2
+    sleep 1
 
     echo ""
     echo "--- Module 2 (deletion): ALSO user 1 first, then user 2 (same order = safe) ---"
@@ -137,7 +141,7 @@ else
          -c "SET application_name = 'drill_credits_fixed_m2';
              BEGIN;
              UPDATE lock_test_credits SET credits = credits - 5  WHERE user_id = 1;
-             SELECT pg_sleep(2);
+             SELECT pg_sleep(1);
              UPDATE lock_test_credits SET credits = credits - 20 WHERE user_id = 2;
              COMMIT;" \
          2>&1 | sed 's/^/  [Module 2 fixed] /' &
@@ -182,4 +186,4 @@ echo "Final credit balances:"
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SELECT user_id, credits FROM lock_test_credits ORDER BY user_id;"
 
-ensure_min_duration 30
+ensure_min_duration 12

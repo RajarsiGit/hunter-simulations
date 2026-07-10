@@ -20,12 +20,14 @@
 # Usage:
 #   ./10_simulate_idle_connection_storm.sh [num_connections] [hold_seconds] [--yes]
 #
-# Defaults: num_connections=500, hold_seconds=2400 (extreme — see actions/
-# connection-exhaustion.jsonc C-1/C-2: these connections count toward
-# connections_pct_used in connection-summary.sql, >=80% warning / >=95%
-# critical of max_connections. 2400s gives ~8 ticks of overlap with the
-# hunter's 300s poll interval, vs. the previous 600s default which only gave
-# ~2 ticks of margin.
+# Defaults: num_connections=500, hold_seconds=8 — capped for fast local
+# drilling (total run stays under ~20s). These connections still count
+# toward connections_pct_used in connection-summary.sql (actions/
+# connection-exhaustion.jsonc C-1/C-2: >=80% warning / >=95% critical of
+# max_connections), but 8s is well under the hunter's 300s poll interval, so
+# hunter-detection reliability is NOT guaranteed at the default; pass a
+# larger hold_seconds explicitly (e.g. 2400, ~8 poll ticks of overlap) if you
+# need this drill to be reliably observed.
 #
 # Example: open 150 plain idle connections directly against RDS for 10 minutes
 #   ./10_simulate_idle_connection_storm.sh 150 600 --yes
@@ -36,7 +38,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
 NUM_CONNECTIONS="${ARGS[0]:-500}"
-HOLD_SECONDS="${ARGS[1]:-2400}"
+HOLD_SECONDS="${ARGS[1]:-8}"
 MAX_PARALLEL="${MAX_PARALLEL:-150}"
 
 echo "=== DRILL: Idle Connection Storm / Leak Simulator ==="

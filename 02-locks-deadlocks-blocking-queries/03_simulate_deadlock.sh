@@ -10,12 +10,14 @@
 # Reproduces the exact deadlock sequence used in the DBA drill:
 #
 #   t=0s  Session A: BEGIN; UPDATE id=ROW_A  (locks ROW_A)
-#   t=2s  Session B: BEGIN; UPDATE id=ROW_B  (locks ROW_B)
-#   t=4s  Session A: UPDATE id=ROW_B         (waits for B — B holds ROW_B)
-#   t=6s  Session B: UPDATE id=ROW_A         (cycle closed — deadlock!)
+#   t=1s  Session B: BEGIN; UPDATE id=ROW_B  (locks ROW_B)
+#   t=2s  Session A: UPDATE id=ROW_B         (waits for B — B holds ROW_B)
+#   t=3s  Session B: UPDATE id=ROW_A         (cycle closed — deadlock!)
 #
-# PostgreSQL detects the cycle after deadlock_timeout (15,000 ms in production)
-# and aborts one session with SQLSTATE 40P01.
+# PostgreSQL detects the cycle after deadlock_timeout. Production baseline is
+# 15,000 ms (runbook §7.3), but both sessions below SET deadlock_timeout='2s'
+# for their own connection so the drill resolves in a few seconds instead of
+# up to 15s — needed to keep the whole script under the 20s drill ceiling.
 #
 # Expected output: one [SessionX] line shows "ERROR: deadlock detected".
 # pg_stat_database.deadlocks increments by 1.
@@ -60,17 +62,18 @@ echo ""
 echo "--- Spawning Session A (locks id=${ROW_A} first) ---"
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_deadlock_A';
+         SET deadlock_timeout = '2s';
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 10 WHERE id = ${ROW_A};
-         SELECT pg_sleep(4);
+         SELECT pg_sleep(2);
          UPDATE lock_test_accounts SET balance = balance + 10 WHERE id = ${ROW_B};
          COMMIT;" \
      2>&1 | sed 's/^/  [Session A] /' &
 PID_A=$!
 echo "  Session A spawned (shell pid ${PID_A})"
 
-# Wait 2s so Session A has acquired its lock on ROW_A before Session B starts.
-sleep 2
+# Wait 1s so Session A has acquired its lock on ROW_A before Session B starts.
+sleep 1
 
 # ---------------------------------------------------------------------------
 # Session B timeline:
@@ -80,9 +83,10 @@ sleep 2
 echo "--- Spawning Session B (locks id=${ROW_B} first) ---"
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_deadlock_B';
+         SET deadlock_timeout = '2s';
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 20 WHERE id = ${ROW_B};
-         SELECT pg_sleep(4);
+         SELECT pg_sleep(2);
          UPDATE lock_test_accounts SET balance = balance + 20 WHERE id = ${ROW_A};
          COMMIT;" \
      2>&1 | sed 's/^/  [Session B] /' &
@@ -99,7 +103,7 @@ echo "               pg_blocking_pids(pid) AS blockers"
 echo "         FROM  pg_stat_activity"
 echo "         WHERE application_name LIKE '%drill_deadlock%';\""
 echo ""
-echo "Waiting for PostgreSQL to auto-resolve the deadlock (up to ~20s)..."
+echo "Waiting for PostgreSQL to auto-resolve the deadlock (up to ~5s)..."
 
 # One session will exit non-zero (deadlock abort) — that is expected and correct.
 wait "${PID_A}" "${PID_B}" || true
@@ -122,7 +126,7 @@ if [[ "${DELTA}" -ge 1 ]]; then
 else
     echo "⚠️  Counter unchanged. Possible causes:"
     echo "     • Tables not set up (run 01_setup_lock_drill_tables.sql first)"
-    echo "     • Timing too short for deadlock cycle to close (unlikely with default 4s sleep)"
+    echo "     • Timing too short for deadlock cycle to close (unlikely with default 2s sleep)"
     echo "     • lock_timeout fired before deadlock_timeout (check SET lock_timeout at role level)"
 fi
 
@@ -134,4 +138,4 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
 echo ""
 echo "See CloudWatch Logs for the 'ERROR: deadlock detected' entry with full query detail."
 
-ensure_min_duration 30
+ensure_min_duration 12

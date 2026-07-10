@@ -27,13 +27,14 @@
 # Usage:
 #   ./08_simulate_create_index_temp_spike.sh [row_count] [--yes]
 #
-# Default row_count=8000000 (was 5000000), matching 07's sort/group_by scale.
+# Default row_count=600000, matching 07's reduced sort/group_by scale —
+# sized so the whole drill finishes in well under 20s.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-8000000}"
+ROW_COUNT="${1:-600000}"
 
 confirm_drill "This creates temp_spill_sort_drill if missing (${ROW_COUNT} rows) and builds a non-concurrent index on its payload column, monitoring pg_stat_progress_create_index." "$@"
 
@@ -90,5 +91,5 @@ echo "In production, prefer CREATE INDEX CONCURRENTLY to avoid blocking writers 
 echo "see ../02-locks-deadlocks-blocking-queries/05_simulate_ddl_blocking_dml.sh for the"
 echo "DDL-blocks-DML angle of non-concurrent index builds."
 echo ""
-ensure_min_duration 20
+ensure_min_duration 10
 echo "Drill complete."

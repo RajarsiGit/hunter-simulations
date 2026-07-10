@@ -44,20 +44,18 @@ echo "--- EXPLAIN with plain index in place (expect Seq Scan — the plain index
 run_explain
 
 echo ""
-echo "--- Sustaining load so the slow-queries hunter can actually observe it ---"
+echo "--- Sustaining load briefly so pg_stat_activity/seq_scan show a signal ---"
 echo "    A single EXPLAIN above finishes in well under a second and only bumps"
-echo "    seq_scan by 1 — nowhere near what the live hunter needs. duration_seconds"
-echo "    is measured from this statement's query_start, so a 2400s hold clears"
-echo "    not just query_slow's >=30s warning threshold but query_critical's"
-echo "    >=1800s CRITICAL threshold too (actions/slow-queries.jsonc Q-2), with"
-echo "    600s to spare over the hunter's 300s poll interval (>=7 ticks of"
-echo "    overlap — EXTREME margin), so query_slow/query_critical reliably fire."
-echo "    slowq_customers is now seeded at 3M rows (01_setup), way above the"
-echo "    hunter's n_live_tup > 100k pre-filter, so seq_scan_tables fires too."
+echo "    seq_scan by 1. This holds the session active for a few seconds and"
+echo "    bursts a couple thousand seq scans (seq_scan_tables, >1000 threshold)"
+echo "    so a quick poll can catch it — sized for a <=20s drill run, not for"
+echo "    clearing the hunter's 300s poll interval/query_critical threshold."
+echo "    slowq_customers is seeded at 150k rows (01_setup), above the hunter's"
+echo "    n_live_tup > 100k pre-filter, so seq_scan_tables can still fire."
 hold_session_active "drill_function_predicate" \
-    "SELECT * FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 2400
+    "SELECT * FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 5
 run_seq_scan_burst "drill_function_predicate" \
-    "1 FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 200000
+    "1 FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 2000
 wait "${HOLD_PID}" 2>/dev/null || true
 
 echo ""

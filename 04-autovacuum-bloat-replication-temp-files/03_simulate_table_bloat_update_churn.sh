@@ -33,20 +33,21 @@
 # Usage:
 #   ./03_simulate_table_bloat_update_churn.sh [row_count] [churn_rounds] [--yes]
 #
-# Defaults: row_count=1000000, churn_rounds=80 — with autovacuum disabled,
-# 80 rounds each updating ~10% of rows drives dead_tup ≈ 8,000,000 against
-# ~1,000,000 live rows (ratio ≈ 0.89), ~50% above the 0.60 CRITICAL floor —
-# wide margin against run-to-run randomness in exactly which rows collide.
+# Defaults: row_count=100000, churn_rounds=30 — sized so the whole drill
+# finishes in well under 20s. With autovacuum disabled, 30 rounds each
+# updating ~10% of rows drives dead_tup ≈ 300,000 against ~100,000 live rows
+# (ratio ≈ 0.75), still clearing the 0.60 CRITICAL floor with margin. Pass
+# larger values for a slower drill with wider threshold margin.
 #
-# Example: 1M rows, 80 churn rounds
-#   ./03_simulate_table_bloat_update_churn.sh 1000000 80
+# Example: 100k rows, 30 churn rounds
+#   ./03_simulate_table_bloat_update_churn.sh 100000 30
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-ROW_COUNT="${1:-1000000}"
-CHURN_ROUNDS="${2:-80}"
+ROW_COUNT="${1:-100000}"
+CHURN_ROUNDS="${2:-30}"
 
 confirm_drill "This creates/populates bloat_drill_records with ${ROW_COUNT} rows, disables autovacuum on it, then runs ${CHURN_ROUNDS} rounds of UPDATE churn to build up dead tuples with nothing ever reclaiming them." "$@"
 
@@ -78,6 +79,11 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
 
 echo ""
 echo "--- Generating churn: ${CHURN_ROUNDS} UPDATE rounds (every 10th row each round) ---"
+# No COMMIT inside the DO block: anonymous PL/pgSQL blocks cannot run
+# transaction-control statements (only CALL-invoked procedures can) — an
+# intermediate COMMIT here raises "invalid transaction termination". Not
+# needed anyway: MVCC already makes each round's prior tuple version dead as
+# soon as the next UPDATE in the same session supersedes it.
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -v ON_ERROR_STOP=1 \
      -c "SET application_name = 'drill_av_bloat_churn';
          DO \$\$
@@ -87,7 +93,6 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" -v ON_ERROR
                  UPDATE bloat_drill_records
                  SET payload = repeat(md5(random()::text), 20), updated_at = now()
                  WHERE id % 10 = 0;
-                 COMMIT;
              END LOOP;
          END \$\$;"
 
@@ -107,5 +112,5 @@ echo "  ALTER TABLE bloat_drill_records SET ("
 echo "      autovacuum_vacuum_scale_factor = 0.02, autovacuum_vacuum_threshold = 5000,"
 echo "      autovacuum_analyze_scale_factor = 0.01, autovacuum_analyze_threshold = 5000);"
 echo ""
-ensure_min_duration 20
+ensure_min_duration 10
 echo "Drill complete."

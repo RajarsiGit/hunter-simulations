@@ -28,11 +28,12 @@
 # Usage:
 #   ./12_simulate_long_txn_vacuum_bloat.sh [hold_seconds] [--yes]
 #
-# Default: hold_seconds=900. NOTE: this scenario isn't gated by any check in
-# THIS hunter (actions/locks-deadlocks-blocking-queries.jsonc) — table bloat
-# detection lives in the autovacuum-bloat-replication-temp-files hunter. 900s
-# matches run_all.sh's shared HOLD variable for this folder and gives a wide
-# window for manual/agent inspection of n_dead_tup and backend_xmin.
+# Default: hold_seconds=8 — sized so the whole drill completes in well under
+# 20s for fast local/CI drilling. NOTE: this scenario isn't gated by any
+# check in THIS hunter (actions/locks-deadlocks-blocking-queries.jsonc) —
+# table bloat detection lives in the autovacuum-bloat-replication-temp-files
+# hunter. Pass a larger hold_seconds (e.g. 900) for a wider manual/agent
+# inspection window of n_dead_tup and backend_xmin.
 #
 # NOTE: like the pre-fix 02/11, "SELECT pg_sleep(N)" inside one -c string
 # keeps state='active' the whole time, NOT 'idle in transaction', despite
@@ -48,7 +49,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-HOLD_SECONDS="${1:-900}"
+HOLD_SECONDS="${1:-8}"
 
 echo "=== DRILL: Long-Running Transaction Blocking Vacuum ==="
 echo "Target     : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -138,5 +139,5 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          FROM   pg_stat_user_tables
          WHERE  relname = 'lock_test_accounts';"
 
-ensure_min_duration 30
+ensure_min_duration 12
 echo "Drill complete."

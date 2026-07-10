@@ -24,19 +24,30 @@ against a disposable/drill database.
 
 ## Detectability by the live slow-queries hunter
 
-Scripts `02`, `03`, and `05` do two extra things after the demonstration
+Scripts `02`-`05` do two extra things after the demonstration
 `EXPLAIN (ANALYZE, BUFFERS)` (which alone finishes in well under a second and
 is invisible to a poll-based hunter):
 
-1. Holds one session `state='active'` for 180s (`hold_session_active` in
-   `_lib/env.sh`) — crosses the `query_slow` / `query_critical` >=30s
-   threshold in `AI-Hunters/actions/slow-queries.jsonc` with a wide margin.
-2. Bursts ~1500 repeated scans in a single PL/pgSQL `DO` block
-   (`run_seq_scan_burst`) — crosses the `seq_scan_tables` >1000-scan /
-   >80%-ratio threshold in `AI-Hunters/queries/slow-queries/slow-queries-seq-scans.sql`.
+1. Holds one session `state='active'` for a few seconds (`hold_session_active`
+   in `_lib/env.sh`) — at these fast-drill settings this is well under the
+   `query_slow` >=30s threshold in `AI-Hunters/actions/slow-queries.jsonc`;
+   see the CAVEAT below.
+2. Bursts a few hundred to a couple thousand repeated scans in a single
+   PL/pgSQL `DO` block (`run_seq_scan_burst`) — aims at the `seq_scan_tables`
+   >1000-scan / >80%-ratio threshold in
+   `AI-Hunters/queries/slow-queries/slow-queries-seq-scans.sql`, though at
+   the lower burst counts used by `04`/`05` it may land under 1000.
 
-So these scripts now take ~180s to complete instead of returning instantly —
-that's expected, not a hang. `06` (stale statistics) additionally disables
+CAVEAT: every drill script in this folder (01-07) is now sized to finish in
+<=20s by default — hold durations, burst counts, and seeded row counts were
+all cut down from far larger values that were originally tuned to clear the
+live hunter's 300s poll interval and its `query_critical` >=1800s / `query_slow`
+>=30s thresholds with wide margin. That hunter-detection reliability is
+knowingly deprioritized here in favor of a fast local drill run — pass larger
+explicit arguments (e.g. `./07_simulate_retry_storm.sh 1500 300`) or edit a
+script's defaults directly if you need a real hunter-detection window.
+
+`06` (stale statistics) additionally disables
 per-table autovacuum and resets `slowq_orders`' stat counters before the bulk
 insert, so `last_analyze`/`last_autoanalyze` reliably read NULL instead of
 racing autovacuum's autoanalyze, and leaves autovacuum disabled afterward —

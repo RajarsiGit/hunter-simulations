@@ -34,10 +34,10 @@ called `confirm_drill` — they only query, never mutate.
 all 3 temp-spill sub-modes as 07-sort/07-hash/07-group) CONCURRENTLY (not
 one at a time) to stack simultaneous IO/CPU load, then runs the diagnostic
 sweep once every drill has finished — one command for the whole topic. No
-fix/remediation or cleanup step: every drill leaves its condition in place
-and guarantees at least a 90s observation window. `--list` previews the
-manifest; `--fast` (default, aggressive row counts) / `--full` (doc-example
-multi-million-row scale, even more aggressive) control drill size.
+fix/remediation or cleanup step: every drill leaves its condition in place.
+Row counts are sized so each drill finishes in well under 20s. `--list`
+previews the manifest; `--fast` (default) / `--full` (~2x the row counts,
+still under 20s per drill) control drill size.
 
 ```bash
 ./run_all.sh --list                          # preview

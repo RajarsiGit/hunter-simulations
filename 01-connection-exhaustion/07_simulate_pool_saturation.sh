@@ -13,16 +13,16 @@
 # Usage:
 #   ./07_simulate_pool_saturation.sh [num_connections] [hold_seconds] [--yes]
 #
-# Defaults: num_connections=500, hold_seconds=2400 (extreme — see actions/
-# connection-exhaustion.jsonc). What this actually saturates is PgBouncer's
+# Defaults: num_connections=500, hold_seconds=8 — capped for fast local
+# drilling (total run stays under ~20s). What this saturates is PgBouncer's
 # per-pool default_pool_size (server-side slots), NOT max_client_conn: once
 # num_connections exceeds default_pool_size, every excess client queues,
 # driving PB-ps-1 (maxwait>=30s OR cl_waiting>=20) and PB-ps-2
 # (maxwait>=120s CRITICAL) in connection-summary's pgbouncer_saturation
-# source. A 2400s hold means anything queued behind these connections waits
-# up to 2400s — 20x past the 120s critical threshold — and gives ~8 ticks of
-# overlap with the hunter's 300s poll interval (the previous 120s hold barely
-# cleared 120s itself with zero margin). NOTE: PB-cc-1/PB-cc-2
+# source. An 8s hold is well under the hunter's 300s poll interval, so
+# hunter-detection reliability is NOT guaranteed at the default; pass a
+# larger hold_seconds explicitly (e.g. 2400, ~8 poll ticks of overlap) if you
+# need PB-ps-1/PB-ps-2 to be reliably observed. NOTE: PB-cc-1/PB-cc-2
 # (max_client_conn, default_pool_size aside — that ceiling is typically
 # huge: the production baseline is 200000, precedent-widened to 150000
 # during Box onboarding per the jsonc header) are NOT realistically
@@ -41,7 +41,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
 NUM_CONNECTIONS="${ARGS[0]:-500}"
-HOLD_SECONDS="${ARGS[1]:-2400}"
+HOLD_SECONDS="${ARGS[1]:-8}"
 MAX_PARALLEL="${MAX_PARALLEL:-150}"   # batch size to avoid overwhelming the local shell
 
 echo "=== DRILL: PgBouncer Pool Saturation Simulator ==="

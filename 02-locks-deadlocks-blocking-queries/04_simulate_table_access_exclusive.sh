@@ -23,10 +23,10 @@
 # Usage:
 #   ./04_simulate_table_access_exclusive.sh [hold_seconds] [--yes]
 #
-# Default: hold_seconds=900 — clears the hunter's 300s poll interval
-# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap,
-# so DC-1 ddl_blocking_detected (waiter_count>=1, no duration threshold)
-# reliably gets sampled instead of finishing between two polls unobserved.
+# Default: hold_seconds=8 — sized so the whole drill completes in well under
+# 20s for fast local/CI drilling. This is short of the hunter's 300s poll
+# interval, so it is NOT reliable for hunter-detection runs (DC-1
+# ddl_blocking_detected) — pass a larger hold_seconds (e.g. 900) for that.
 #
 # CEILING WARNING: SysCloud baseline (runbook §7.3) is
 # idle_in_transaction_session_timeout=60s and statement_timeout=5min. Session
@@ -42,7 +42,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-HOLD_SECONDS="${1:-900}"
+HOLD_SECONDS="${1:-8}"
 
 echo "=== DRILL: Table-Level AccessExclusiveLock ==="
 echo "Target : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -119,5 +119,5 @@ echo "   Only pg_terminate_backend works."
 echo ""
 echo "Session A releases after ${HOLD_SECONDS}s. Waiting..."
 wait
-ensure_min_duration 30
+ensure_min_duration 12
 echo "All drill sessions have completed."

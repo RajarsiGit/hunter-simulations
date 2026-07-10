@@ -12,12 +12,13 @@
 # Usage:
 #   ./07_simulate_retry_storm.sh [session_count] [retries_per_session] [--yes]
 #
-# Defaults: session_count=1500, retries_per_session=300 (extreme — 450x the
-# original baseline call volume; can itself trigger connection-exhaustion
-# symptoms alongside the slow-query signal — that's expected here).
+# Defaults: session_count=15, retries_per_session=5 — sized so the whole
+# drill (spawn + retries + wait) finishes in <=20s. Raise both for a heavier
+# manual/CI stress run; at very high counts this can itself trigger
+# connection-exhaustion symptoms alongside the slow-query signal.
 #
-# NOTE: 1500 concurrent connections may exceed max_connections on a small
-# drill instance (RDS default formula is roughly DBInstanceClassMemory /
+# NOTE: a large session_count may exceed max_connections on a small drill
+# instance (RDS default formula is roughly DBInstanceClassMemory /
 # 9531392, often a few hundred to ~1-2k on small/medium classes) and/or the
 # OS's open-files/process ulimits on the machine running this script. If
 # psql starts failing with "FATAL: too many connections" or "FATAL: sorry,
@@ -32,8 +33,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 POSARGS=()
 while IFS= read -r line; do POSARGS+=("${line}"); done < <(strip_flags "$@")
-SESSION_COUNT="${POSARGS[0]:-1500}"
-RETRIES="${POSARGS[1]:-300}"
+SESSION_COUNT="${POSARGS[0]:-15}"
+RETRIES="${POSARGS[1]:-5}"
 
 PSQL=(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}")
 
@@ -78,6 +79,6 @@ echo "--- pg_stat_statements for the storm query (if extension installed) ---"
     || echo "(pg_stat_statements not available/installed — skipped)"
 
 echo ""
-ensure_min_duration 2400
+ensure_min_duration 10
 echo "Drill complete. Real fixes: disable aggressive client-side retry, add backoff+jitter,"
 echo "add a circuit breaker, rate-limit the failing endpoint, and fix the root slow query."

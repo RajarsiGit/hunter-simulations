@@ -35,12 +35,13 @@
 # Usage:
 #   ./11_simulate_idle_in_transaction.sh [row_id] [idle_seconds] [blocker_count] [--yes]
 #
-# Defaults: row_id=3, idle_seconds=900, blocker_count=5
+# Defaults: row_id=3, idle_seconds=8, blocker_count=5
 #
-# idle_seconds=900 clears TWO real thresholds from
-# actions/locks-deadlocks-blocking-queries.jsonc with wide margin: the 300s
-# poll interval (3 ticks of overlap) AND LB-3 idle_in_transaction_critical's
-# blocker_idle_age_seconds >= 300s (600s margin).
+# idle_seconds=8 is sized so the whole drill completes in well under 20s for
+# fast local/CI drilling. This is short of the hunter's 300s poll interval
+# and LB-3 idle_in_transaction_critical's 300s threshold, so it is NOT
+# reliable for hunter-detection runs — pass a larger idle_seconds (e.g. 900)
+# for that.
 #
 # blocker_count=5 is new: this drill now opens FIVE independent idle-in-txn
 # sessions (on rows id=1..5 of lock_test_accounts, which 01_setup seeds with
@@ -79,7 +80,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 ROW_ID="${1:-3}"
-IDLE_SECONDS="${2:-900}"
+IDLE_SECONDS="${2:-8}"
 BLOCKER_COUNT="${3:-5}"
 
 echo "=== DRILL: Idle-in-Transaction Blocking ==="
@@ -160,5 +161,5 @@ echo "  idle_in_transaction_session_timeout = '5min'"
 echo ""
 echo "Session A auto-releases after ${IDLE_SECONDS}s. Waiting..."
 wait
-ensure_min_duration 30
+ensure_min_duration 12
 echo "All drill sessions completed."

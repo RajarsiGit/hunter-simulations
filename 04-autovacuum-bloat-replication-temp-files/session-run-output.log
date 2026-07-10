@@ -1,0 +1,914 @@
+rajarsi@syscloud-1J93:/mnt/c/SysCloud/Tools/dba-issues/hunter-simulations/04-autovacuum-bloat-replication-temp-files$ DRILL_YES=1 ./run_all.sh
+=== Autovacuum / Bloat / Replication / Temp Files — run_all.sh (fast) ===
+Target: postgres@dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com:5432/Drill_DB
+
+
+───────────────────────────────────────────────────────────────────
+▶ [01] Setup bloat-drill table shells
+  psql -h dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com -p 5432 -U postgres -d Drill_DB -f 01_setup_bloat_drill_tables.sql
+───────────────────────────────────────────────────────────────────
+psql:01_setup_bloat_drill_tables.sql:27: NOTICE:  relation "bloat_drill_records" already exists, skipping
+CREATE TABLE
+psql:01_setup_bloat_drill_tables.sql:33: NOTICE:  relation "wal_drill_records" already exists, skipping
+CREATE TABLE
+psql:01_setup_bloat_drill_tables.sql:39: NOTICE:  extension "pg_stat_statements" already exists, skipping
+CREATE EXTENSION
+Setup complete: bloat_drill_records, wal_drill_records ready. pg_stat_statements ensured.
+✔ [01] Setup bloat-drill table shells (ok, 2s)
+▶ [03] Table bloat from UPDATE/DELETE churn — launching in parallel: ./03_simulate_table_bloat_update_churn.sh 1000000 80
+▶ [04] Index bloat outpaces table bloat — launching in parallel: ./04_simulate_index_bloat.sh 1000000
+▶ [05] Autovacuum worker starvation (concurrent vacuum-eligible tables) — launching in parallel: ./05_simulate_autovacuum_worker_starvation.sh 5 3000000
+▶ [06] Stale statistics → bad plan — launching in parallel: ./06_simulate_stale_statistics_bad_plan.sh 1000000
+
+--- Resetting Drill_DB's stats ONCE, shared by 07-sort/07-hash/07-group/08 ---
+    (see 07's header for the TF-1/TF-2 1h-floor-since-reset mechanic this
+    exploits — a shared reset lets their spills stack instead of each
+    wiping what its siblings already contributed) ---
+ pg_stat_reset 
+---------------
+ 
+(1 row)
+
+▶ [07-sort] Temp-file spill: sort — launching in parallel: ./07_simulate_temp_file_spill.sh sort 8000000
+▶ [07-hash] Temp-file spill: hash join — launching in parallel: ./07_simulate_temp_file_spill.sh hash_join 4000000
+▶ [07-group] Temp-file spill: hash aggregate — launching in parallel: ./07_simulate_temp_file_spill.sh group_by 8000000
+▶ [08] CREATE INDEX build temp/maintenance_work_mem spike — launching in parallel: ./08_simulate_create_index_temp_spike.sh 8000000
+▶ [09] Inactive replication slot retains WAL — launching in parallel: ./09_simulate_replication_slot_wal_retention.sh 6000000
+▶ [10] Write surge → replica lag — launching in parallel: ./10_simulate_replica_lag_write_surge.sh 8000000
+
+--- Waiting for 10 parallel drill(s) to finish ---
+✘ [03] Table bloat from UPDATE/DELETE churn — exit 1 (parallel batch 83s)
+✘ [04] Index bloat outpaces table bloat — exit 1 (parallel batch 165s)
+✔ [05] Autovacuum worker starvation (concurrent vacuum-eligible tables) (ok, parallel batch 165s)
+✔ [06] Stale statistics → bad plan (ok, parallel batch 165s)
+✔ [07-sort] Temp-file spill: sort (ok, parallel batch 239s)
+✔ [07-hash] Temp-file spill: hash join (ok, parallel batch 239s)
+✔ [07-group] Temp-file spill: hash aggregate (ok, parallel batch 239s)
+✔ [08] CREATE INDEX build temp/maintenance_work_mem spike (ok, parallel batch 239s)
+✘ [09] Inactive replication slot retains WAL — exit 1 (parallel batch 239s)
+✔ [10] Write surge → replica lag (ok, parallel batch 746s)
+
+───────────────────────────────────────────────────────────────────
+▶ [02] Diagnostic sweep (autovacuum, bloat, replication, temp files, monitoring gaps)
+  psql -h dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com -p 5432 -U postgres -d Drill_DB -f 02_bloat_vacuum_diagnostic_sweep.sql
+───────────────────────────────────────────────────────────────────
+=== §1 Dead tuple / vacuum overview (top 50 by dead tuples) ===
+ schemaname |         relname         | n_live_tup | n_dead_tup | dead_pct | last_vacuum |        last_autovacuum        |         last_analyze          |       last_autoanalyze        | vacuum_count | autovacuum_count 
+------------+-------------------------+------------+------------+----------+-------------+-------------------------------+-------------------------------+-------------------------------+--------------+------------------
+ public     | wal_drill_records       |    8000000 |    8000000 |    50.00 |             |                               |                               |                               |            0 |                0
+ public     | av_starvation_drill_2   |    3000000 |    1000000 |    25.00 |             | 2026-07-10 07:49:51.335801+00 |                               | 2026-07-10 07:42:04.493335+00 |            0 |                5
+ public     | av_starvation_drill_5   |    3000000 |    1000000 |    25.00 |             | 2026-07-10 07:51:24.259419+00 |                               | 2026-07-10 07:44:27.783671+00 |            0 |                6
+ public     | av_starvation_drill_1   |    3000000 |    1000000 |    25.00 |             | 2026-07-10 07:49:56.167816+00 |                               | 2026-07-10 07:47:15.204206+00 |            0 |                3
+ public     | av_starvation_drill_3   |    3000000 |    1000000 |    25.00 |             | 2026-07-10 07:51:31.482333+00 |                               | 2026-07-10 07:41:06.811571+00 |            0 |                6
+ public     | av_starvation_drill_4   |    3000000 |    1000000 |    25.00 |             | 2026-07-10 07:50:45.200956+00 |                               | 2026-07-10 07:47:15.858627+00 |            0 |                3
+ public     | bloat_drill_records     |          0 |     866664 |   100.00 |             |                               |                               |                               |            0 |                0
+ public     | index_bloat_drill       |    1000307 |     285410 |    22.20 |             |                               | 2026-07-10 07:39:22.160461+00 |                               |            0 |                0
+ pg_toast   | pg_toast_2619           |          0 |         39 |   100.00 |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591633      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_2328           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_2610           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_2615           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591638      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_3596           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_3600           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ public     | lock_test_job_queue     |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_1255           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591380      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591590      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_2606           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591479      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591365      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ public     | lock_test_mvw           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591353      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591616      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591327      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591341      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591418      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ public     | slowq_orders            |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591466      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_826            |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591389      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_1213           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591433      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_3456           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_14354          |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ public     | lock_test_accounts      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_2618           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ public     | temp_spill_join_a       |    3999546 |          0 |     0.00 |             |                               | 2026-07-10 07:39:32.762198+00 |                               |            0 |                0
+ pg_toast   | pg_toast_6106           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_789591615      |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ public     | lock_test_child         |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ public     | lock_test_credits       |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_2964           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ public     | lock_test_workflow_jobs |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_3118           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_1262           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_14349          |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+ pg_toast   | pg_toast_3592           |          0 |          0 |          |             |                               |                               |                               |            0 |                0
+(50 rows)
+
+=== §2 Tables not vacuumed recently (>10k dead tuples) ===
+ schemaname |        relname        | n_live_tup | n_dead_tup |        last_autovacuum        | since_last_autovacuum 
+------------+-----------------------+------------+------------+-------------------------------+-----------------------
+ public     | wal_drill_records     |    8000000 |    8000000 |                               | 
+ public     | bloat_drill_records   |          0 |     866664 |                               | 
+ public     | index_bloat_drill     |    1000307 |     285410 |                               | 
+ public     | av_starvation_drill_2 |    3000000 |    1000000 | 2026-07-10 07:49:51.335801+00 | 00:01:53.029961
+ public     | av_starvation_drill_1 |    3000000 |    1000000 | 2026-07-10 07:49:56.167816+00 | 00:01:48.197946
+ public     | av_starvation_drill_4 |    3000000 |    1000000 | 2026-07-10 07:50:45.200956+00 | 00:00:59.164806
+ public     | av_starvation_drill_5 |    3000000 |    1000000 | 2026-07-10 07:51:24.259419+00 | 00:00:20.106343
+ public     | av_starvation_drill_3 |    3000000 |    1000000 | 2026-07-10 07:51:31.482333+00 | 00:00:12.883429
+(8 rows)
+
+=== §3 Transaction ID wraparound risk (database + table level) ===
+             datname             |  xid_age  | tx_remaining_before_wraparound 
+---------------------------------+-----------+--------------------------------
+ SCSGBackupTrans_18102           | 199636519 |                     1800363481
+ PDF_Canary1_DB                  | 199632664 |                     1800367336
+ SCSGBackupTrans_18205           | 199597788 |                     1800402212
+ SCSGBackupTrans_18298           | 199597676 |                     1800402324
+ SCSGBackupTrans_17296           | 199524110 |                     1800475890
+ SCSGBackupTrans_17339           | 199523667 |                     1800476333
+ SCSGBackupTrans_17978           | 199523655 |                     1800476345
+ SCSGBackupTrans_18072           | 199523560 |                     1800476440
+ SCSGBackupTrans_18073           | 199523457 |                     1800476543
+ SCSGBackupTrans_18074           | 199523420 |                     1800476580
+ SCSGBackupTrans_18093           | 199523392 |                     1800476608
+ SCSGBackupTrans_18129           | 199512625 |                     1800487375
+ SCSGBackupTrans_18152           | 199512460 |                     1800487540
+ SCSGBackupTrans_18165           | 199505254 |                     1800494746
+ SCSGBackupTrans_18169           | 199505237 |                     1800494763
+ SCSGBackupTrans_18196           | 199503883 |                     1800496117
+ SCSGBackupTrans_18292           | 199502782 |                     1800497218
+ SCSGBackupTrans_18305           | 199502739 |                     1800497261
+ SCSGBackupTrans_18311           | 199502698 |                     1800497302
+ SCSGBackupTrans_18356           | 199502168 |                     1800497832
+ SCSGBackupTrans_18365           | 199501180 |                     1800498820
+ SCSGBackupTrans_18054           | 198522246 |                     1801477754
+ SCSGBackupTrans_18084           | 198522144 |                     1801477856
+ SCSGBackupTrans_18121           | 198522115 |                     1801477885
+ SCSGBackupTrans_18121_v2        | 198522115 |                     1801477885
+ SCSGBackupTrans_18139           | 198522031 |                     1801477969
+ SCSGBackupTrans_18290           | 198521928 |                     1801478072
+ SCSGBackupTrans_18338           | 198521817 |                     1801478183
+ SCSGBackupTrans_16876_PerfectDB | 197272550 |                     1802727450
+ SCSGBackupTrans_18353           | 196129775 |                     1803870225
+ GraphQL-Intro-DB                | 196062149 |                     1803937851
+ SCSGBackupTrans_18484           | 196062147 |                     1803937853
+ SCSGBackupTrans_18514           | 196062147 |                     1803937853
+ SCSGBackupTrans_18518           | 196062147 |                     1803937853
+ SCSGBackupTrans_18862           | 196062147 |                     1803937853
+ SCSGBackupTrans_18865           | 196062147 |                     1803937853
+ Trans-DB-Template               | 196062147 |                     1803937853
+ SCSGBackupTrans_18149           | 196062147 |                     1803937853
+ SCSGBackupTrans_18407           | 196062147 |                     1803937853
+ SCSGBackupTrans_18410           | 196062147 |                     1803937853
+ SCSGBackupTrans_18406           | 196062147 |                     1803937853
+ SCSGBackupTrans_18404           | 196062147 |                     1803937853
+ SCSGBackupTrans_18408           | 196062147 |                     1803937853
+ Liquibase_Template              | 196062147 |                     1803937853
+ SCSGBackupTrans_18405           | 196062147 |                     1803937853
+ SCSGBackupTrans_18412           | 196062147 |                     1803937853
+ SCSGBackupTrans_18806           | 196062147 |                     1803937853
+ SCSGBackupTrans_18121_v3        | 196062147 |                     1803937853
+ SCSGBackupTrans_18434           | 196062147 |                     1803937853
+ SCSGBackupTrans_18428           | 196062147 |                     1803937853
+ SCSGBackupTrans_18417           | 196062147 |                     1803937853
+ SCSGBackupTrans_18435           | 196062147 |                     1803937853
+ SCSGBackupTrans_18419           | 196062147 |                     1803937853
+ SCSGBackupTrans_18424           | 196062147 |                     1803937853
+ SCSGBackupTrans_18436           | 196062147 |                     1803937853
+ SCSGBackupTrans_18422           | 196062147 |                     1803937853
+ SCSGBackupTrans_18429           | 196062147 |                     1803937853
+ SCSGBackupTrans_18458           | 196062147 |                     1803937853
+ SCSGBackupTrans_18053           | 196062147 |                     1803937853
+ SCSGBackupTrans_18462           | 196062147 |                     1803937853
+ SCSGBackupTrans_18481           | 196062147 |                     1803937853
+ SCSGBackupTrans_18457           | 196062147 |                     1803937853
+ SCSGBackupTrans_18487           | 196062147 |                     1803937853
+ SCSGBackupTrans_18497           | 196062147 |                     1803937853
+ SCSGBackupTrans_18519           | 196062147 |                     1803937853
+ SCSGBackupTrans_18515           | 196062147 |                     1803937853
+ SCSGBackupTrans_18885           | 196062147 |                     1803937853
+ SCSGBackupTrans_18888           | 196062147 |                     1803937853
+ SCSGBackupTrans_18887           | 196062147 |                     1803937853
+ SCSGBackupTrans_18894           | 196062147 |                     1803937853
+ SCSGBackupTrans_18893           | 196062147 |                     1803937853
+ SCSGBackupTrans_18891           | 196062147 |                     1803937853
+ SCSGBackupTrans_18892           | 196062147 |                     1803937853
+ SCSGBackupTrans_18896           | 196062147 |                     1803937853
+ SCSGBackupTrans_18897           | 196062147 |                     1803937853
+ SCSGBackupTrans_18909           | 196062147 |                     1803937853
+ SCSGBackupTrans_18904           | 196062147 |                     1803937853
+ SCSGBackupTrans_18910           | 196062147 |                     1803937853
+ SCSGBackupTrans_18902           | 196062147 |                     1803937853
+ SCSGBackupTrans_18899           | 196062147 |                     1803937853
+ SCSGBackupTrans_18906           | 196062147 |                     1803937853
+ SCSGBackupTrans_18898           | 196062147 |                     1803937853
+ SCSGBackupTrans_18900           | 196062147 |                     1803937853
+ SCSGBackupTrans_18907           | 196062147 |                     1803937853
+ SCSGBackupTrans_18903           | 196062147 |                     1803937853
+ SCSGBackupTrans_18901           | 196062147 |                     1803937853
+ SCSGBackupTrans_18905           | 196062147 |                     1803937853
+ SCSGBackupTrans_18908           | 196062147 |                     1803937853
+ SCSGBackupTrans_18495           | 196062147 |                     1803937853
+ SCSGBackupTrans_18509           | 196062147 |                     1803937853
+ SCSGBackupTrans_18523           | 196062147 |                     1803937853
+ SCSGBackupTrans_18525           | 196062147 |                     1803937853
+ SCSGBackupTrans_18521           | 196062147 |                     1803937853
+ SCSGBackupTrans_18516           | 196062147 |                     1803937853
+ SCSGBackupTrans_18537           | 196062147 |                     1803937853
+ SCSGBackupTrans_18125           | 196062147 |                     1803937853
+ SCSGBackupTrans_18527           | 196062147 |                     1803937853
+ SCSGBackupTrans_18345           | 196062147 |                     1803937853
+ SCSGBackupTrans_18531           | 196062147 |                     1803937853
+ SCSGBackupTrans_18556           | 196062147 |                     1803937853
+ SCSGBackupTrans_18568           | 196062147 |                     1803937853
+ SCSGBackupTrans_18546           | 196062147 |                     1803937853
+ SCSGBackupTrans_18579           | 196062147 |                     1803937853
+ SCSGBackupTrans_18561           | 196062147 |                     1803937853
+ SCSGBackupTrans_18580           | 196062147 |                     1803937853
+ SCSGBackupTrans_18595           | 196062147 |                     1803937853
+ SCSGBackupTrans_18575           | 196062147 |                     1803937853
+ SCSGBackupTrans_18582           | 196062147 |                     1803937853
+ SCSGBackupTrans_18588           | 196062147 |                     1803937853
+ SCSGBackupTrans_18348           | 196062147 |                     1803937853
+ SCSGBackupTrans_18349           | 196062147 |                     1803937853
+ SCSGBackupTrans_18350           | 196062147 |                     1803937853
+ SCSGBackupTrans_18604           | 196062147 |                     1803937853
+ SCSGBackupTrans_18618           | 196062147 |                     1803937853
+ SCSGBackupTrans_18628           | 196062147 |                     1803937853
+ SCSGBackupTrans_18803           | 196062147 |                     1803937853
+ SCSGBackupTrans_18878           | 196062147 |                     1803937853
+ SCSGBackupTrans_18670           | 196062147 |                     1803937853
+ SCSGBackupTrans_18719           | 196062147 |                     1803937853
+ SCSGBackupTrans_18147           | 196062147 |                     1803937853
+ SCSGBackupTrans_18721           | 196062147 |                     1803937853
+ SCSGBackupTrans_18723           | 196062147 |                     1803937853
+ SCSGBackupTrans_18722           | 196062147 |                     1803937853
+ SCSGBackupTrans_18740           | 196062147 |                     1803937853
+ SCSGBackupTrans_18756           | 196062147 |                     1803937853
+ SCSGBackupTrans_18741           | 196062147 |                     1803937853
+ SCSGBackupTrans_18744           | 196062147 |                     1803937853
+ SCSGBackupTrans_18742           | 196062147 |                     1803937853
+ SCSGBackupTrans_18747           | 196062147 |                     1803937853
+ SCSGBackupTrans_18753           | 196062147 |                     1803937853
+ SCSGBackupTrans_18743           | 196062147 |                     1803937853
+ SCSGBackupTrans_18745           | 196062147 |                     1803937853
+ SCSGBackupTrans_18759           | 196062147 |                     1803937853
+ SCSGBackupTrans_18749           | 196062147 |                     1803937853
+ SCSGBackupTrans_18748           | 196062147 |                     1803937853
+ SCSGBackupTrans_18761           | 196062147 |                     1803937853
+ SCSGBackupTrans_18754           | 196062147 |                     1803937853
+ SCSGBackupTrans_18755           | 196062147 |                     1803937853
+ SCSGBackupTrans_18762           | 196062147 |                     1803937853
+ SCSGBackupTrans_18760           | 196062147 |                     1803937853
+ SCSGBackupTrans_18758           | 196062147 |                     1803937853
+ SCSGBackupTrans_18895           | 196062147 |                     1803937853
+ SCSGBackupTrans_18357           | 196062147 |                     1803937853
+ SCSGBackupTrans_18372           | 196062147 |                     1803937853
+ SCSGBackupTrans_18096           | 196062147 |                     1803937853
+ SCSGBackupTrans_18098           | 196062147 |                     1803937853
+ SCSGBackupTrans_18586           | 196062147 |                     1803937853
+ SCSGBackupTrans_18797           | 196062147 |                     1803937853
+ SCSGBackupTrans_18802           | 196062147 |                     1803937853
+ SCSGBackupTrans_18520           | 196062147 |                     1803937853
+ SCSGBackupTrans_18805           | 196062147 |                     1803937853
+ SCSGBackupTrans_18798           | 196062147 |                     1803937853
+ SCSGBackupTrans_18064           | 196062147 |                     1803937853
+ SCSGBackupTrans_18845           | 196062147 |                     1803937853
+ SCSGBackupTrans_18847           | 196062147 |                     1803937853
+ SCSGBackupTrans_18850           | 196062147 |                     1803937853
+ SCSGBackupTrans_18848           | 196062147 |                     1803937853
+ SCSGBackupTrans_18849           | 196062147 |                     1803937853
+ SCSGBackupTrans_18861           | 196062147 |                     1803937853
+ SCSGBackupTrans_18864           | 196062147 |                     1803937853
+ SCSGBackupTrans_18842           | 196062147 |                     1803937853
+ SCSGBackupTrans_18846           | 196062147 |                     1803937853
+ SCSGBackupTrans_18844           | 196062147 |                     1803937853
+ SCSGBackupTrans_18863           | 196062147 |                     1803937853
+ SCSGBackupTrans_18841           | 196062147 |                     1803937853
+ SCSGBackupTrans_18872           | 196062147 |                     1803937853
+ SCSGBackupTrans_18874           | 196062147 |                     1803937853
+ SCSGBackupTrans_18870           | 196062147 |                     1803937853
+ SCSGBackupTrans_18868           | 196062147 |                     1803937853
+ SCSGBackupTrans_18866           | 196062147 |                     1803937853
+ SCSGBackupTrans_18871           | 196062147 |                     1803937853
+ SCSGBackupTrans_18875           | 196062147 |                     1803937853
+ SCSGBackupTrans_18873           | 196062147 |                     1803937853
+ SCSGBackupTrans_18867           | 196062147 |                     1803937853
+ SCSGBackupTrans_18869           | 196062147 |                     1803937853
+ SCSGBackupTrans_18877           | 196062147 |                     1803937853
+ SCSGBackupTrans_18876           | 196062147 |                     1803937853
+ SCSGBackupTrans_18882           | 196062147 |                     1803937853
+ SCSGBackupTrans_18884           | 196062147 |                     1803937853
+ SCSGBackupTrans_18879           | 196062147 |                     1803937853
+ SCSGBackupTrans_18889           | 196062147 |                     1803937853
+ SCSGBackupTrans_18890           | 196062147 |                     1803937853
+ SCSGBackupTrans_18880           | 196062147 |                     1803937853
+ SCSGBackupTrans_18886           | 196062147 |                     1803937853
+ SCSGBackupTrans_18883           | 196062147 |                     1803937853
+ SCSGBackupTrans_18881           | 196062147 |                     1803937853
+ SCSGBackupTrans_18360           | 195434684 |                     1804565316
+ PDF_Master_GA_DB                | 195432545 |                     1804567455
+ PDF_AddOns_DB                   | 195432133 |                     1804567867
+ MDLConfigDB                     | 189267020 |                     1810732980
+ DBAUtil                         | 186748924 |                     1813251076
+ PDF_Canary1_Canary2_Canary3_DB  | 186748781 |                     1813251219
+ PDF_Canary1_Canary2_DB          | 186748739 |                     1813251261
+ PDF_Canary1_Canary3_DB          | 186748718 |                     1813251282
+ PDF_Canary1_DB_old              | 186748674 |                     1813251326
+ PDF_Canary2_Canary3_DB          | 186748617 |                     1813251383
+ PDF_Canary2_DB                  | 186748562 |                     1813251438
+ PDF_Canary3_DB_old              | 186748513 |                     1813251487
+ template1                       | 169594719 |                     1830405281
+ Drill_DB                        | 169594719 |                     1830405281
+ SCSGBackupTrans_18592           | 169594719 |                     1830405281
+ rdsadmin                        | 169594566 |                     1830405434
+ postgres                        | 169594406 |                     1830405594
+ PDF_AI_DB                       | 100414657 |                     1899585343
+ PDF_AI_DB_old                   | 100414657 |                     1899585343
+ SCSGBackupTrans_1077            |  60769158 |                     1939230842
+ PDF_Canary3_DB                  |  60769158 |                     1939230842
+ template0                       |  60769158 |                     1939230842
+(208 rows)
+
+         table_name          | xid_age  | relpages | reltuples 
+-----------------------------+----------+----------+-----------
+ pg_toast.pg_toast_1255      | 60769158 |        1 |         3
+ pg_toast.pg_toast_1247      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2604      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2606      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2610      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2612      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2600      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2619      | 60769158 |        3 |        14
+ pg_toast.pg_toast_3381      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3429      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2618      | 60769158 |       64 |       279
+ pg_toast.pg_toast_2620      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3466      | 60769158 |        0 |         0
+ pg_toast.pg_toast_14349     | 60769158 |        0 |         0
+ pg_toast.pg_toast_2609      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2615      | 60769158 |        0 |         0
+ pg_toast.pg_toast_1262      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2964      | 60769158 |        0 |         0
+ pg_toast.pg_toast_1213      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2396      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3600      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3079      | 60769158 |        0 |         0
+ pg_toast.pg_toast_2328      | 60769158 |        0 |         0
+ pg_toast.pg_toast_1417      | 60769158 |        0 |         0
+ pg_toast.pg_toast_1418      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3118      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3256      | 60769158 |        0 |         0
+ pg_toast.pg_toast_826       | 60769158 |        0 |         0
+ pg_toast.pg_toast_3394      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3596      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3592      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3456      | 60769158 |        0 |         0
+ pg_toast.pg_toast_6243      | 60769158 |        0 |         0
+ pg_toast.pg_toast_3350      | 60769158 |        0 |         0
+ pg_toast.pg_toast_6106      | 60769158 |        0 |         0
+ pg_toast.pg_toast_6100      | 60769158 |        0 |         0
+ pg_toast.pg_toast_14354     | 60769158 |        0 |         0
+ pg_toast.pg_toast_14359     | 60769158 |        0 |         0
+ pg_toast.pg_toast_14364     | 60769158 |        0 |         0
+ pg_toast.pg_toast_789591327 |      563 |        0 |        -1
+ slowq_orders                |      562 |    89625 |   1.2e+07
+ pg_toast.pg_toast_789591341 |      559 |        0 |        -1
+ slowq_customers             |      558 |    25441 |     3e+06
+ pg_toast.pg_toast_789591353 |      555 |        0 |        -1
+ slowq_json_events           |      554 |   631579 |   1.2e+07
+ lock_test_accounts          |      382 |        0 |        -1
+ pg_toast.pg_toast_789591365 |      382 |        0 |        -1
+ lock_test_parent            |      376 |        0 |        -1
+ pg_toast.pg_toast_789591380 |      376 |        0 |        -1
+ lock_test_child             |      376 |        0 |        -1
+(50 rows)
+
+=== §4 Autovacuum workers currently running + progress ===
+  pid  | datname  | application_name | state  | wait_event_type | wait_event  |     runtime     |                                  query                                  
+-------+----------+------------------+--------+-----------------+-------------+-----------------+-------------------------------------------------------------------------
+ 15987 | Drill_DB |                  | active | Timeout         | VacuumDelay | 00:00:20.819049 | autovacuum: VACUUM public.av_starvation_drill_2
+ 15744 | Drill_DB |                  | active | Timeout         | VacuumDelay | 00:00:13.596118 | autovacuum: VACUUM public.av_starvation_drill_1
+ 16200 | Drill_DB |                  | active | Timeout         | VacuumDelay | 00:00:06.892339 | autovacuum: VACUUM public.av_starvation_drill_5
+ 16209 | Drill_DB | psql             | active |                 |             | 00:00:00        | SELECT                                                                 +
+       |          |                  |        |                 |             |                 |     pid, datname, application_name, state, wait_event_type, wait_event,+
+       |          |                  |        |                 |             |                 |     now() - query_start AS runtime, left(query, 200) AS query          +
+       |          |                  |        |                 |             |                 | FROM pg_stat_activity                                                  +
+       |          |                  |        |                 |             |                 | WHERE query ILIKE '%autovacuum%'                                       +
+       |          |                  |        |                 |             |                 | ORDE
+(4 rows)
+
+  pid  |         relid         |     phase     | heap_blks_total | heap_blks_scanned | heap_blks_vacuumed 
+-------+-----------------------+---------------+-----------------+-------------------+--------------------
+ 15987 | av_starvation_drill_2 | scanning heap |          363637 |            189712 |                  0
+ 15744 | av_starvation_drill_1 | scanning heap |          363637 |            142495 |                  0
+ 16200 | av_starvation_drill_5 | scanning heap |          363637 |            129518 |                  0
+(3 rows)
+
+ autovacuum_max_workers 
+------------------------
+ 4
+(1 row)
+
+ autovacuum_naptime 
+--------------------
+ 15s
+(1 row)
+
+ autovacuum_vacuum_cost_delay 
+------------------------------
+ 2ms
+(1 row)
+
+ autovacuum_vacuum_cost_limit 
+------------------------------
+ 1200
+(1 row)
+
+=== §5 Table and index size (top 50) ===
+ schemaname |         relname         | total_size | table_size | index_size | n_live_tup | n_dead_tup 
+------------+-------------------------+------------+------------+------------+------------+------------
+ public     | wal_drill_records       | 46 GB      | 46 GB      | 685 MB     |    8000000 |    8000000
+ public     | temp_spill_sort_drill   | 6288 MB    | 3125 MB    | 3162 MB    |    8000000 |          0
+ public     | slowq_json_events       | 5193 MB    | 4934 MB    | 257 MB     |          0 |          0
+ public     | av_starvation_drill_1   | 2970 MB    | 2841 MB    | 129 MB     |    3000000 |    1000000
+ public     | av_starvation_drill_5   | 2970 MB    | 2841 MB    | 129 MB     |    3000000 |    1000000
+ public     | av_starvation_drill_4   | 2970 MB    | 2841 MB    | 129 MB     |    3000000 |    1000000
+ public     | av_starvation_drill_2   | 2970 MB    | 2841 MB    | 129 MB     |    3000000 |    1000000
+ public     | av_starvation_drill_3   | 2970 MB    | 2841 MB    | 129 MB     |    3000000 |    1000000
+ public     | index_bloat_drill       | 2889 MB    | 2511 MB    | 378 MB     |    1000307 |     285410
+ public     | bloat_drill_records     | 2579 MB    | 2492 MB    | 86 MB      |          0 |     866664
+ public     | slowq_orders            | 1072 MB    | 783 MB     | 288 MB     |          0 |          0
+ public     | temp_spill_join_a       | 782 MB     | 782 MB     | 0 bytes    |    3999546 |          0
+ public     | temp_spill_join_b       | 782 MB     | 782 MB     | 0 bytes    |    3999546 |          0
+ public     | temp_spill_group_drill  | 521 MB     | 521 MB     | 0 bytes    |    7999892 |          0
+ public     | slowq_customers         | 379 MB     | 199 MB     | 180 MB     |          0 |          0
+ pg_toast   | pg_toast_1262           | 3696 kB    | 3328 kB    | 336 kB     |          0 |          0
+ pg_toast   | pg_toast_2618           | 576 kB     | 528 kB     | 16 kB      |          0 |          0
+ pg_toast   | pg_toast_2619           | 240 kB     | 192 kB     | 16 kB      |          0 |         39
+ pg_toast   | pg_toast_1255           | 56 kB      | 8192 bytes | 16 kB      |          0 |          0
+ public     | lock_test_workflow_jobs | 48 kB      | 8192 bytes | 32 kB      |          0 |          0
+ public     | lock_test_child         | 48 kB      | 8192 bytes | 32 kB      |          0 |          0
+ public     | lock_test_mvw           | 40 kB      | 8192 bytes | 16 kB      |          0 |          0
+ public     | lock_test_accounts      | 32 kB      | 8192 bytes | 16 kB      |          0 |          0
+ public     | lock_test_mvw_base      | 32 kB      | 8192 bytes | 16 kB      |          0 |          0
+ public     | lock_test_credits       | 32 kB      | 8192 bytes | 16 kB      |          0 |          0
+ public     | lock_test_parent        | 32 kB      | 8192 bytes | 16 kB      |          0 |          0
+ public     | lock_test_job_queue     | 32 kB      | 8192 bytes | 16 kB      |          0 |          0
+ pg_toast   | pg_toast_789591389      | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_1213           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_789591433      | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_3456           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_14354          | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_6106           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_789591615      | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_2964           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_3256           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_14349          | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_3592           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_2600           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_789591507      | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_3350           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_3079           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_789591450      | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_3381           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_2396           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_3466           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_789591643      | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_3394           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_6100           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+ pg_toast   | pg_toast_1247           | 8192 bytes | 0 bytes    | 8192 bytes |          0 |          0
+(50 rows)
+
+=== §6 Index bloat candidates (largest indexes + scan usage) ===
+ schemaname |       table_name        |                index_name                 | index_size | idx_scan | idx_tup_read | idx_tup_fetch 
+------------+-------------------------+-------------------------------------------+------------+----------+--------------+---------------
+ public     | temp_spill_sort_drill   | idx_temp_spill_sort_drill_payload_regular | 3162 MB    |        0 |            0 |             0
+ public     | wal_drill_records       | wal_drill_records_pkey                    | 685 MB     |        0 |            0 |             0
+ public     | slowq_orders            | slowq_orders_pkey                         | 288 MB     |        0 |            0 |             0
+ public     | slowq_json_events       | slowq_json_events_pkey                    | 257 MB     |        0 |            0 |             0
+ public     | index_bloat_drill       | idx_index_bloat_drill_payload             | 165 MB     |        0 |            0 |             0
+ public     | av_starvation_drill_4   | av_starvation_drill_4_pkey                | 129 MB     |        0 |            0 |             0
+ public     | av_starvation_drill_1   | av_starvation_drill_1_pkey                | 129 MB     |        0 |            0 |             0
+ public     | av_starvation_drill_2   | av_starvation_drill_2_pkey                | 129 MB     |        0 |            0 |             0
+ public     | av_starvation_drill_3   | av_starvation_drill_3_pkey                | 129 MB     |        0 |            0 |             0
+ public     | av_starvation_drill_5   | av_starvation_drill_5_pkey                | 129 MB     |        0 |            0 |             0
+ public     | slowq_customers         | idx_slowq_customers_email                 | 116 MB     |        0 |            0 |             0
+ public     | index_bloat_drill       | idx_index_bloat_drill_status              | 113 MB     |        0 |            0 |             0
+ public     | bloat_drill_records     | bloat_drill_records_pkey                  | 86 MB      |        0 |            0 |             0
+ public     | slowq_customers         | slowq_customers_pkey                      | 64 MB      |        0 |            0 |             0
+ public     | index_bloat_drill       | index_bloat_drill_pkey                    | 43 MB      |        0 |            0 |             0
+ public     | index_bloat_drill       | idx_index_bloat_drill_created             | 43 MB      |        0 |            0 |             0
+ public     | index_bloat_drill       | idx_index_bloat_drill_tenant              | 14 MB      |        0 |            0 |             0
+ public     | lock_test_mvw           | idx_lock_test_mvw_category                | 16 kB      |        0 |            0 |             0
+ public     | lock_test_child         | lock_test_child_pkey                      | 16 kB      |        0 |            0 |             0
+ public     | lock_test_parent        | lock_test_parent_pkey                     | 16 kB      |        0 |            0 |             0
+ public     | lock_test_accounts      | lock_test_accounts_pkey                   | 16 kB      |        0 |            0 |             0
+ public     | lock_test_child         | idx_lock_test_child_parent_id             | 16 kB      |        0 |            0 |             0
+ public     | lock_test_workflow_jobs | lock_test_workflow_jobs_pkey              | 16 kB      |        0 |            0 |             0
+ public     | lock_test_workflow_jobs | lock_test_workflow_jobs_job_key_key       | 16 kB      |        0 |            0 |             0
+ public     | lock_test_mvw_base      | lock_test_mvw_base_pkey                   | 16 kB      |        0 |            0 |             0
+ public     | lock_test_job_queue     | lock_test_job_queue_pkey                  | 16 kB      |        0 |            0 |             0
+ public     | lock_test_credits       | lock_test_credits_pkey                    | 16 kB      |        0 |            0 |             0
+(27 rows)
+
+=== §7 Stale statistics candidates ===
+ schemaname |         relname         | n_mod_since_analyze |         last_analyze          |       last_autoanalyze        
+------------+-------------------------+---------------------+-------------------------------+-------------------------------
+ public     | wal_drill_records       |            16000000 |                               | 
+ public     | bloat_drill_records     |              666666 |                               | 
+ public     | lock_test_job_queue     |                   0 |                               | 
+ public     | av_starvation_drill_5   |                   0 |                               | 2026-07-10 07:44:27.783671+00
+ public     | lock_test_mvw           |                   0 |                               | 
+ public     | slowq_orders            |                   0 |                               | 
+ public     | lock_test_accounts      |                   0 |                               | 
+ public     | temp_spill_join_a       |                   0 | 2026-07-10 07:39:32.762198+00 | 
+ public     | lock_test_child         |                   0 |                               | 
+ public     | lock_test_credits       |                   0 |                               | 
+ public     | av_starvation_drill_3   |                   0 |                               | 2026-07-10 07:41:06.811571+00
+ public     | lock_test_workflow_jobs |                   0 |                               | 
+ public     | av_starvation_drill_2   |                   0 |                               | 2026-07-10 07:42:04.493335+00
+ public     | temp_spill_sort_drill   |                   0 | 2026-07-10 07:39:52.910185+00 | 
+ public     | lock_test_parent        |                   0 |                               | 
+ public     | slowq_json_events       |                   0 |                               | 
+ public     | slowq_customers         |                   0 |                               | 
+ public     | temp_spill_join_b       |                   0 | 2026-07-10 07:39:51.036039+00 | 
+ public     | av_starvation_drill_1   |                   0 |                               | 2026-07-10 07:47:15.204206+00
+ public     | temp_spill_group_drill  |                   0 | 2026-07-10 07:39:31.038233+00 | 
+ public     | lock_test_mvw_base      |                   0 |                               | 
+ public     | index_bloat_drill       |                   0 | 2026-07-10 07:39:22.160461+00 | 
+ public     | av_starvation_drill_4   |                   0 |                               | 2026-07-10 07:47:15.858627+00
+(23 rows)
+
+=== §8 Temp file usage — database level ===
+             datname             | temp_files | temp_bytes | deadlocks | blk_read_time | blk_write_time 
+---------------------------------+------------+------------+-----------+---------------+----------------
+ Drill_DB                        |       1288 | 5941 MB    |         0 |   2075827.116 |      52679.078
+ rdsadmin                        |          0 | 0 bytes    |         0 |     10081.067 |        329.635
+ postgres                        |          0 | 0 bytes    |         0 |      5859.814 |          2.152
+ template0                       |          0 | 0 bytes    |         0 |             0 |              0
+ template1                       |          0 | 0 bytes    |         0 |        733.82 |          1.427
+ PDF_AI_DB_old                   |          0 | 0 bytes    |         0 |       3809.68 |        139.507
+ Trans-DB-Template               |          0 | 0 bytes    |         0 |      4575.923 |          7.897
+ PDF_AI_DB                       |          0 | 0 bytes    |         0 |      2523.009 |           2.05
+ SCSGBackupTrans_18152           |          0 | 0 bytes    |         0 |      6141.582 |         13.944
+ SCSGBackupTrans_18149           |          0 | 0 bytes    |         0 |        5898.4 |         11.025
+ GraphQL-Intro-DB                |          0 | 0 bytes    |         0 |      4622.302 |         16.501
+ SCSGBackupTrans_18121_v2        |          0 | 0 bytes    |         0 |      6499.139 |          5.939
+ SCSGBackupTrans_18165           |          0 | 0 bytes    |         0 |      3874.206 |        313.068
+ SCSGBackupTrans_17296           |          0 | 0 bytes    |         0 |      9129.047 |         11.232
+ PDF_Canary1_Canary2_DB          |          0 | 0 bytes    |         0 |      2658.854 |         48.932
+ SCSGBackupTrans_18169           |          0 | 0 bytes    |         0 |    273403.646 |       3265.101
+ SCSGBackupTrans_18407           |          0 | 0 bytes    |         0 |      4689.325 |          9.584
+ SCSGBackupTrans_17339           |          0 | 0 bytes    |         0 |      9063.734 |          19.64
+ SCSGBackupTrans_18410           |          0 | 0 bytes    |         0 |      4671.337 |         11.838
+ SCSGBackupTrans_18406           |          0 | 0 bytes    |         0 |    381796.969 |       3960.434
+ SCSGBackupTrans_18404           |          0 | 0 bytes    |         0 |      5358.169 |         10.577
+ PDF_Master_GA_DB                |          0 | 0 bytes    |         0 |      4258.581 |        132.359
+ SCSGBackupTrans_18408           |          0 | 0 bytes    |         0 |       3120.72 |         10.512
+ Liquibase_Template              |          0 | 0 bytes    |         0 |     22835.867 |         10.564
+ SCSGBackupTrans_18405           |          0 | 0 bytes    |         0 |      5842.966 |         10.446
+ SCSGBackupTrans_18412           |          0 | 0 bytes    |         0 |      5533.834 |        177.249
+ SCSGBackupTrans_18806           |          0 | 0 bytes    |         0 |     20362.251 |         83.722
+ SCSGBackupTrans_18196           |          0 | 0 bytes    |         0 |      5682.206 |         11.491
+ SCSGBackupTrans_18121_v3        |          0 | 0 bytes    |         0 |      7083.342 |          7.165
+ SCSGBackupTrans_18205           |          0 | 0 bytes    |         0 |    189884.277 |       1880.716
+ SCSGBackupTrans_18434           |          0 | 0 bytes    |         0 |      5425.159 |          8.529
+ SCSGBackupTrans_18428           |          0 | 0 bytes    |         0 |        6117.4 |         13.058
+ SCSGBackupTrans_18417           |          0 | 0 bytes    |         0 |      6189.342 |          7.833
+ SCSGBackupTrans_18102           |          0 | 0 bytes    |         0 |    713372.368 |      79272.342
+ SCSGBackupTrans_18435           |          0 | 0 bytes    |         0 |      4699.095 |        245.836
+ SCSGBackupTrans_18419           |          0 | 0 bytes    |         0 |      5975.628 |           10.5
+ SCSGBackupTrans_17978           |          0 | 0 bytes    |         0 |      5795.424 |        506.365
+ SCSGBackupTrans_18424           |          0 | 0 bytes    |         0 |       4725.51 |          9.605
+ SCSGBackupTrans_18290           |          0 | 0 bytes    |         0 |      5446.001 |         10.529
+ SCSGBackupTrans_18436           |          0 | 0 bytes    |         0 |      6024.697 |          8.368
+ SCSGBackupTrans_18422           |          0 | 0 bytes    |         0 |      4377.112 |         10.322
+ SCSGBackupTrans_18298           |          0 | 0 bytes    |         0 |      7679.322 |        210.164
+ SCSGBackupTrans_18429           |          0 | 0 bytes    |         0 |      4204.628 |          7.586
+ SCSGBackupTrans_18292           |          0 | 0 bytes    |         0 |      8775.231 |         14.537
+ SCSGBackupTrans_18458           |          0 | 0 bytes    |         0 |       4682.59 |          10.72
+ SCSGBackupTrans_18053           |          0 | 0 bytes    |         0 |      5850.817 |         11.964
+ PDF_Canary1_Canary2_Canary3_DB  |          0 | 0 bytes    |         0 |      3950.613 |           2.76
+ PDF_Canary3_DB_old              |          0 | 0 bytes    |         0 |      3448.794 |          1.456
+ SCSGBackupTrans_18462           |          0 | 0 bytes    |         0 |      4883.765 |          8.598
+ SCSGBackupTrans_18481           |          0 | 0 bytes    |         0 |      6883.903 |         10.724
+ SCSGBackupTrans_18457           |          0 | 0 bytes    |         0 |      6015.081 |          8.779
+ PDF_Canary2_DB                  |          0 | 0 bytes    |         0 |      3940.325 |           3.29
+ PDF_Canary1_DB_old              |          0 | 0 bytes    |         0 |      2504.351 |         63.268
+ PDF_Canary2_Canary3_DB          |          0 | 0 bytes    |         0 |       2724.19 |           2.21
+ PDF_Canary1_Canary3_DB          |          0 | 0 bytes    |         0 |       2672.04 |          1.874
+ SCSGBackupTrans_18054           |          0 | 0 bytes    |         0 |      7355.084 |          6.824
+ MDLConfigDB                     |          0 | 0 bytes    |         0 |      5525.692 |         10.241
+ SCSGBackupTrans_18072           |          0 | 0 bytes    |         0 |      5165.268 |          7.686
+ SCSGBackupTrans_18487           |          0 | 0 bytes    |         0 |      9142.923 |          7.809
+ SCSGBackupTrans_18311           |          0 | 0 bytes    |         0 |      5762.669 |        343.234
+ SCSGBackupTrans_18497           |          0 | 0 bytes    |         0 |      5810.682 |         24.846
+ SCSGBackupTrans_18519           |          0 | 0 bytes    |         0 |      5437.594 |          9.212
+ SCSGBackupTrans_18515           |          0 | 0 bytes    |         0 |      5049.703 |          8.838
+ SCSGBackupTrans_18484           |          0 | 0 bytes    |         0 |      4562.371 |          8.494
+ SCSGBackupTrans_18514           |          0 | 0 bytes    |         0 |      4383.177 |         12.072
+ SCSGBackupTrans_18518           |          0 | 0 bytes    |         0 |      5096.756 |           6.43
+ SCSGBackupTrans_18862           |          0 | 0 bytes    |         0 |      7981.131 |         10.865
+ SCSGBackupTrans_18305           |          0 | 0 bytes    |         0 |      6442.867 |         23.081
+ SCSGBackupTrans_18495           |          0 | 0 bytes    |         0 |      4763.616 |        350.707
+ SCSGBackupTrans_18509           |          0 | 0 bytes    |         0 |      4757.687 |          8.055
+ SCSGBackupTrans_18523           |          0 | 0 bytes    |         0 |      5992.806 |           9.33
+ SCSGBackupTrans_18129           |          0 | 0 bytes    |         0 |      5336.045 |        317.442
+ SCSGBackupTrans_18525           |          0 | 0 bytes    |         0 |    309513.254 |       63990.21
+ SCSGBackupTrans_18521           |          0 | 0 bytes    |         0 |      5262.008 |       1570.855
+ SCSGBackupTrans_18516           |          0 | 0 bytes    |         0 |        6007.8 |        173.807
+ SCSGBackupTrans_18537           |          0 | 0 bytes    |         0 |      6221.788 |         29.578
+ SCSGBackupTrans_18125           |          0 | 0 bytes    |         0 |      5728.731 |        271.381
+ PDF_AddOns_DB                   |          0 | 0 bytes    |         0 |      5534.624 |        223.342
+ PDF_Canary1_DB                  |          0 | 0 bytes    |         0 |      3677.622 |        199.994
+ SCSGBackupTrans_18121           |          0 | 0 bytes    |         0 |   3759715.778 |        713.161
+ SCSGBackupTrans_18527           |          0 | 0 bytes    |         0 |      4926.718 |          5.953
+ SCSGBackupTrans_18345           |          0 | 0 bytes    |         0 |       5402.51 |        429.659
+ SCSGBackupTrans_18531           |          0 | 0 bytes    |         0 |      5519.751 |        333.855
+ SCSGBackupTrans_18556           |          0 | 0 bytes    |         0 |      6162.181 |        819.856
+ SCSGBackupTrans_18568           |          0 | 0 bytes    |         0 |      6046.679 |        152.431
+ SCSGBackupTrans_18546           |          0 | 0 bytes    |         0 |      6947.661 |        304.546
+ SCSGBackupTrans_18579           |          0 | 0 bytes    |         0 |      6469.194 |          5.359
+ SCSGBackupTrans_18561           |          0 | 0 bytes    |         0 |    371129.392 |       5914.488
+ SCSGBackupTrans_18580           |          0 | 0 bytes    |         0 |      7461.258 |         22.551
+ SCSGBackupTrans_18595           |          0 | 0 bytes    |         0 |     44580.652 |       5157.377
+ SCSGBackupTrans_18575           |          0 | 0 bytes    |         0 |      4072.428 |        390.076
+ SCSGBackupTrans_18582           |          0 | 0 bytes    |         0 |      4627.034 |        363.763
+ SCSGBackupTrans_18588           |          0 | 0 bytes    |         0 |      6173.242 |        447.934
+ SCSGBackupTrans_18348           |          0 | 0 bytes    |         0 |      5512.921 |        256.878
+ SCSGBackupTrans_18349           |          0 | 0 bytes    |         0 |      5015.603 |        191.803
+ SCSGBackupTrans_18350           |          0 | 0 bytes    |         0 |      4991.777 |        129.612
+ SCSGBackupTrans_18604           |          0 | 0 bytes    |         0 |      5697.678 |         53.742
+ SCSGBackupTrans_18618           |          0 | 0 bytes    |         0 |       5984.82 |         12.201
+ SCSGBackupTrans_18628           |          0 | 0 bytes    |         0 |      6249.844 |         11.274
+ SCSGBackupTrans_18139           |          0 | 0 bytes    |         0 |      6418.862 |         85.671
+ SCSGBackupTrans_18803           |          0 | 0 bytes    |         0 |       8171.67 |         337.16
+ SCSGBackupTrans_18878           |          0 | 0 bytes    |         0 |      7588.052 |        195.463
+ SCSGBackupTrans_18084           |          0 | 0 bytes    |         0 |      7007.498 |        300.673
+ SCSGBackupTrans_18670           |          0 | 0 bytes    |         0 |      5697.926 |        261.449
+ SCSGBackupTrans_16876_PerfectDB |          0 | 0 bytes    |         0 |        5608.7 |        208.433
+ SCSGBackupTrans_18353           |          0 | 0 bytes    |         0 |      5524.234 |         29.856
+ SCSGBackupTrans_18719           |          0 | 0 bytes    |         0 |      6448.856 |         17.714
+ SCSGBackupTrans_18147           |          0 | 0 bytes    |         0 |      5733.911 |          8.795
+ SCSGBackupTrans_18721           |          0 | 0 bytes    |         0 |      4839.563 |          7.855
+ SCSGBackupTrans_18723           |          0 | 0 bytes    |         0 |      5043.788 |          9.682
+ SCSGBackupTrans_18722           |          0 | 0 bytes    |         0 |      4961.422 |          6.733
+ SCSGBackupTrans_18740           |          0 | 0 bytes    |         0 |      6041.003 |        491.785
+ SCSGBackupTrans_18756           |          0 | 0 bytes    |         0 |      4661.095 |         52.458
+ SCSGBackupTrans_18741           |          0 | 0 bytes    |         0 |      4185.186 |         15.767
+ SCSGBackupTrans_18744           |          0 | 0 bytes    |         0 |      4692.641 |         10.458
+ SCSGBackupTrans_18742           |          0 | 0 bytes    |         0 |      4373.915 |         13.592
+ SCSGBackupTrans_18747           |          0 | 0 bytes    |         0 |      4560.915 |        142.175
+ SCSGBackupTrans_18753           |          0 | 0 bytes    |         0 |      4918.201 |          6.411
+ SCSGBackupTrans_18743           |          0 | 0 bytes    |         0 |      4099.127 |        130.592
+ SCSGBackupTrans_18745           |          0 | 0 bytes    |         0 |      4920.921 |        105.093
+ SCSGBackupTrans_18759           |          0 | 0 bytes    |         0 |      4653.349 |        956.497
+ SCSGBackupTrans_18749           |          0 | 0 bytes    |         0 |      5748.717 |         58.249
+ SCSGBackupTrans_18748           |          0 | 0 bytes    |         0 |      4871.818 |          8.243
+ SCSGBackupTrans_18093           |          0 | 0 bytes    |         0 |     74712.303 |       3474.452
+ SCSGBackupTrans_18761           |          0 | 0 bytes    |         0 |      5381.941 |         16.717
+ SCSGBackupTrans_18754           |          0 | 0 bytes    |         0 |      5033.557 |        178.245
+ SCSGBackupTrans_18755           |          0 | 0 bytes    |         0 |      5093.559 |         99.675
+ SCSGBackupTrans_18762           |          0 | 0 bytes    |         0 |       5712.33 |        114.015
+ SCSGBackupTrans_18760           |          0 | 0 bytes    |         0 |      4067.005 |         13.082
+ SCSGBackupTrans_18758           |          0 | 0 bytes    |         0 |      4534.304 |          8.138
+ SCSGBackupTrans_18356           |          0 | 0 bytes    |         0 |      7103.807 |       2196.417
+ SCSGBackupTrans_18360           |          0 | 0 bytes    |         0 |      4974.002 |          36.28
+ SCSGBackupTrans_18895           |          0 | 0 bytes    |         0 |       8242.66 |         15.672
+ SCSGBackupTrans_18357           |          0 | 0 bytes    |         0 |      4897.356 |         73.752
+ SCSGBackupTrans_18365           |          0 | 0 bytes    |         0 |    438079.973 |       5417.478
+ SCSGBackupTrans_18372           |          0 | 0 bytes    |         0 |      5505.984 |         80.516
+ SCSGBackupTrans_18096           |          0 | 0 bytes    |         0 |     14157.114 |        165.132
+ SCSGBackupTrans_18098           |          0 | 0 bytes    |         0 |      6360.217 |          8.591
+ SCSGBackupTrans_18586           |          0 | 0 bytes    |         0 |       4388.49 |          9.284
+ PDF_Canary3_DB                  |          0 | 0 bytes    |         0 |      5126.774 |           5.83
+ SCSGBackupTrans_18797           |          0 | 0 bytes    |         0 |      5591.488 |         17.249
+ SCSGBackupTrans_18802           |          0 | 0 bytes    |         0 |      50525.25 |        402.497
+ SCSGBackupTrans_18520           |          0 | 0 bytes    |         0 |     58512.364 |      24402.532
+ SCSGBackupTrans_18805           |          0 | 0 bytes    |         0 |      5914.731 |         23.025
+ SCSGBackupTrans_18798           |          0 | 0 bytes    |         0 |      6042.172 |          5.562
+ SCSGBackupTrans_18592           |          0 | 0 bytes    |         0 |     98081.643 |        795.339
+ SCSGBackupTrans_18338           |          0 | 0 bytes    |         0 |     57619.697 |        557.967
+ SCSGBackupTrans_18064           |          0 | 0 bytes    |         0 |      5158.655 |          18.11
+ SCSGBackupTrans_18074           |          0 | 0 bytes    |         0 |    517719.417 |      77206.484
+ SCSGBackupTrans_18073           |          0 | 0 bytes    |         0 |     28733.698 |        234.892
+ SCSGBackupTrans_18845           |          0 | 0 bytes    |         0 |      7979.292 |         12.437
+ SCSGBackupTrans_18847           |          0 | 0 bytes    |         0 |      5668.844 |        316.367
+ SCSGBackupTrans_18850           |          0 | 0 bytes    |         0 |     46323.625 |       1008.934
+ SCSGBackupTrans_18848           |          0 | 0 bytes    |         0 |      5389.851 |          8.366
+ SCSGBackupTrans_18849           |          0 | 0 bytes    |         0 |      6126.534 |         23.942
+ SCSGBackupTrans_18861           |          0 | 0 bytes    |         0 |       6251.28 |        390.691
+ SCSGBackupTrans_18865           |          0 | 0 bytes    |         0 |       6925.16 |          7.881
+ SCSGBackupTrans_18864           |          0 | 0 bytes    |         0 |      6848.014 |         16.703
+ SCSGBackupTrans_18842           |          0 | 0 bytes    |         0 |      5370.784 |        214.738
+ SCSGBackupTrans_18846           |          0 | 0 bytes    |         0 |      5305.746 |          8.773
+ SCSGBackupTrans_18844           |          0 | 0 bytes    |         0 |      7028.114 |         23.639
+ SCSGBackupTrans_18863           |          0 | 0 bytes    |         0 |      4379.154 |           7.33
+ SCSGBackupTrans_18841           |          0 | 0 bytes    |         0 |      5061.881 |          10.54
+ SCSGBackupTrans_18872           |          0 | 0 bytes    |         0 |      6651.151 |         379.56
+ SCSGBackupTrans_18874           |          0 | 0 bytes    |         0 |      6745.873 |         10.457
+ SCSGBackupTrans_18870           |          0 | 0 bytes    |         0 |      7655.478 |          7.402
+ SCSGBackupTrans_18868           |          0 | 0 bytes    |         0 |      5999.271 |          9.153
+ SCSGBackupTrans_18866           |          0 | 0 bytes    |         0 |      6037.972 |         15.944
+ SCSGBackupTrans_18871           |          0 | 0 bytes    |         0 |      6667.622 |         13.283
+ SCSGBackupTrans_18875           |          0 | 0 bytes    |         0 |      6734.899 |         51.015
+ SCSGBackupTrans_18873           |          0 | 0 bytes    |         0 |       5357.69 |          9.366
+ SCSGBackupTrans_18867           |          0 | 0 bytes    |         0 |       6404.11 |         86.937
+ SCSGBackupTrans_18869           |          0 | 0 bytes    |         0 |      5959.131 |          8.747
+ SCSGBackupTrans_18877           |          0 | 0 bytes    |         0 |      6750.504 |        334.569
+ SCSGBackupTrans_18876           |          0 | 0 bytes    |         0 |      6319.444 |          7.735
+ SCSGBackupTrans_18882           |          0 | 0 bytes    |         0 |      6211.529 |         10.191
+ SCSGBackupTrans_18884           |          0 | 0 bytes    |         0 |      6411.401 |         30.121
+ SCSGBackupTrans_18879           |          0 | 0 bytes    |         0 |      5335.809 |          8.168
+ SCSGBackupTrans_18889           |          0 | 0 bytes    |         0 |      6820.869 |         10.254
+ SCSGBackupTrans_18890           |          0 | 0 bytes    |         0 |      6031.731 |           5.51
+ SCSGBackupTrans_18880           |          0 | 0 bytes    |         0 |      7058.539 |          8.171
+ SCSGBackupTrans_18886           |          0 | 0 bytes    |         0 |      6182.795 |          8.637
+ SCSGBackupTrans_18883           |          0 | 0 bytes    |         0 |     34140.582 |        281.763
+ SCSGBackupTrans_18881           |          0 | 0 bytes    |         0 |       5713.82 |         12.638
+ SCSGBackupTrans_18885           |          0 | 0 bytes    |         0 |      8125.143 |         12.427
+ SCSGBackupTrans_18888           |          0 | 0 bytes    |         0 |    389784.715 |       3649.113
+ SCSGBackupTrans_18887           |          0 | 0 bytes    |         0 |      7026.759 |         20.589
+ SCSGBackupTrans_18894           |          0 | 0 bytes    |         0 |      6993.866 |          12.01
+ SCSGBackupTrans_18893           |          0 | 0 bytes    |         0 |      6492.224 |         12.404
+ SCSGBackupTrans_18891           |          0 | 0 bytes    |         0 |      5615.387 |        335.288
+ SCSGBackupTrans_18892           |          0 | 0 bytes    |         0 |      5302.115 |          17.01
+ SCSGBackupTrans_18896           |          0 | 0 bytes    |         0 |      5000.722 |          8.574
+ SCSGBackupTrans_18897           |          0 | 0 bytes    |         0 |      4821.504 |         81.708
+ SCSGBackupTrans_18909           |          0 | 0 bytes    |         0 |      7014.757 |          7.789
+ SCSGBackupTrans_18904           |          0 | 0 bytes    |         0 |      5852.465 |         143.55
+ SCSGBackupTrans_18910           |          0 | 0 bytes    |         0 |      7200.636 |          9.112
+ SCSGBackupTrans_18902           |          0 | 0 bytes    |         0 |      5033.787 |          9.805
+ SCSGBackupTrans_18899           |          0 | 0 bytes    |         0 |      4876.833 |        162.124
+ SCSGBackupTrans_18906           |          0 | 0 bytes    |         0 |       5682.86 |          9.209
+ SCSGBackupTrans_18898           |          0 | 0 bytes    |         0 |      5032.126 |         15.853
+ SCSGBackupTrans_18900           |          0 | 0 bytes    |         0 |      5277.541 |        110.376
+ SCSGBackupTrans_18907           |          0 | 0 bytes    |         0 |      5147.459 |          6.773
+ SCSGBackupTrans_18903           |          0 | 0 bytes    |         0 |      4471.251 |          9.087
+ SCSGBackupTrans_18901           |          0 | 0 bytes    |         0 |      4327.602 |          5.951
+ SCSGBackupTrans_18905           |          0 | 0 bytes    |         0 |      4909.094 |         13.156
+ SCSGBackupTrans_18908           |          0 | 0 bytes    |         0 |      4645.987 |        163.442
+ DBAUtil                         |          0 | 0 bytes    |         0 |      9211.924 |        278.214
+                                 |          0 | 0 bytes    |         0 |             0 |              0
+ SCSGBackupTrans_1077            |          0 | 0 bytes    |         0 |     43515.691 |        363.188
+(209 rows)
+
+=== §9 Active queries likely creating temp files right now ===
+  pid  | usename  | datname  | application_name | state  | wait_event_type | wait_event | query_age |                                          query                                          
+-------+----------+----------+------------------+--------+-----------------+------------+-----------+-----------------------------------------------------------------------------------------
+ 16209 | postgres | Drill_DB | psql             | active |                 |            | 00:00:00  | SELECT                                                                                 +
+       |          |          |                  |        |                 |            |           |     pid, usename, datname, application_name, state, wait_event_type, wait_event,       +
+       |          |          |                  |        |                 |            |           |     now() - query_start AS query_age, left(query, 300) AS query                        +
+       |          |          |                  |        |                 |            |           | FROM pg_stat_activity                                                                  +
+       |          |          |                  |        |                 |            |           | WHERE state <> 'idle'                                                                  +
+       |          |          |                  |        |                 |            |           |   AND (query ILIKE '%order by%' OR query ILIKE '%group by%' OR query ILIKE '%distinct%'+
+       |          |          |                  |        |                 |            |           |        OR query 
+(1 row)
+
+ work_mem 
+----------
+ 768MB
+(1 row)
+
+ maintenance_work_mem 
+----------------------
+ 512MB
+(1 row)
+
+ temp_file_limit 
+-----------------
+ -1
+(1 row)
+
+ log_temp_files 
+----------------
+ -1
+(1 row)
+
+=== §10 Top SQL by temp block usage (requires pg_stat_statements) ===
+       queryid        | calls |  total_exec_time   |   mean_exec_time    | rows  | temp_blks_read | temp_blks_written |                                                   query                                                   
+----------------------+-------+--------------------+---------------------+-------+----------------+-------------------+-----------------------------------------------------------------------------------------------------------
+  3743802447041203584 |     1 |        39321.42269 |         39321.42269 |     0 |        1463869 |           1467141 | EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM temp_spill_sort_drill ORDER BY payload
+  -911341594284991063 |     2 |      230534.107711 |      115267.0538555 |     0 |         998069 |            998090 | CREATE INDEX idx_temp_spill_sort_drill_payload_regular                                                   +
+                      |       |                    |                     |       |                |                   |          ON temp_spill_sort_drill(payload)
+  7310902195568034858 |     1 |        16468.38168 |         16468.38168 |     0 |         108655 |            108836 | EXPLAIN (ANALYZE, BUFFERS) SELECT payload, count(*) FROM temp_spill_group_drill GROUP BY payload
+ -3703052699806589126 |     2 | 1006045.4291350001 |  503022.71456750005 |     0 |          62815 |             62816 | EXPLAIN (ANALYZE, BUFFERS)                                                                               +
+                      |       |                    |                     |       |                |                   |                   SELECT * FROM slowq_orders                                                             +
+                      |       |                    |                     |       |                |                   |                   ORDER BY created_at DESC                                                               +
+                      |       |                    |                     |       |                |                   |                   OFFSET $1 LIMIT $2
+  9096616591660511517 |     2 | 408969.38150699995 |  204484.69075349998 |     0 |          26432 |             26424 | CREATE INDEX IF NOT EXISTS idx_slowq_customers_email ON slowq_customers(email)
+  4078595538470785683 |     1 |       16840.913466 |        16840.913466 |     0 |          24044 |             25500 | EXPLAIN (ANALYZE, BUFFERS)                                                                               +
+                      |       |                    |                     |       |                |                   |              SELECT count(*) FROM temp_spill_join_a a JOIN temp_spill_join_b b ON a.join_key = b.join_key
+  5079398458320585352 |     2 |        5170.719588 |         2585.359794 |     0 |           9296 |              9292 | CREATE INDEX IF NOT EXISTS idx_index_bloat_drill_payload ON index_bloat_drill(payload)
+  -548585898690262034 |     2 |  919.6768390000001 |  459.83841950000004 |     0 |           6366 |              6362 | CREATE INDEX IF NOT EXISTS idx_index_bloat_drill_status  ON index_bloat_drill(status)
+  5945378154306553916 |     2 | 1474.1040759999998 |   737.0520379999999 |     0 |           2453 |              2449 | CREATE INDEX IF NOT EXISTS idx_index_bloat_drill_tenant  ON index_bloat_drill(tenant_id)
+  -491588598904719092 |     2 |  688.1571250000001 |  344.07856250000003 |     0 |           2452 |              2448 | CREATE INDEX IF NOT EXISTS idx_index_bloat_drill_created ON index_bloat_drill(created_at)
+ -2924532839778345940 |     4 |         423.548542 |  105.88713550000001 |     0 |              0 |                 0 | SELECT SPLIT_PART(C.collcollate, $1, $2) lang_terr, COUNT(*) refs                                        +
+                      |       |                    |                     |       |                |                   | FROM pg_catalog.pg_depend D, pg_catalog.pg_collation C                                                   +
+                      |       |                    |                     |       |                |                   | WHERE D.refobjid = C.oid                                                                                 +
+                      |       |                    |                     |       |                |                   |     AND D.refclassid = $3::REGCLASS                                                                      +
+                      |       |                    |                     |       |                |                   |     AND C.collname <> $4                                                                                 +
+                      |       |                    |                     |       |                |                   |     AND C.collname not like $5                                                                           +
+                      |       |                    |                     |       |                |                   |     AND D.deptype <> $6                                                                                  +
+                      |       |                    |                     |       |                |                   | GROUP BY SPLIT_PART(C.collcollate, '.'
+ -6638236131011848862 |     1 |           0.027679 |            0.027679 |     0 |              0 |                 0 | SET application_name = $1
+ -3688696628780506391 |     1 |           0.005756 |            0.005756 |     1 |              0 |                 0 | SELECT $1
+  4342685554090377022 |     4 | 28.845281999999997 |   7.211320499999999 |     4 |              0 |                 0 | SELECT COUNT(*)                                                                                          +
+                      |       |                    |                     |       |                |                   | RELS                                                                                                     +
+                      |       |                    |                     |       |                |                   | ,(MAX(RELPAGES::bigint) FILTER (WHERE RELKIND IN ($1 /*, ... */) AND RELNAMESPACE<>$2::REGNAMESPACE))*$3 +
+                      |       |                    |                     |       |                |                   | LARGEST_TABLE_BYTES                                                                                      +
+                      |       |                    |                     |       |                |                   | ,(MAX(RELTUPLES::bigint) FILTER (WHERE RELKIND IN ($4 /*, ... */) AND RELNAMESPACE<>$5::REGNAMESPACE))   +
+                      |       |                    |                     |       |                |                   | LARGEST_TABLE_TUPLES                                                                                     +
+                      |       |                    |                     |       |                |                   | ,(MAX(RELPAGES::bigint) FILTER
+   -86323926068950410 |     9 |           0.030195 |            0.003355 |     9 |              0 |                 0 | SELECT version()
+ -3688696628780506391 |     1 |             0.0069 |              0.0069 |     1 |              0 |                 0 | SELECT $1
+ -3688696628780506391 |     1 |           0.006957 |            0.006957 |     1 |              0 |                 0 | SELECT $1
+ -7996130089428731343 |     8 |           0.680598 | 0.08507474999999999 |     0 |              0 |                 0 | SELECT datname, datconnlimit FROM pg_database WHERE datconnlimit <> $1
+  1048751239121443339 |     1 |           0.703636 |            0.703636 |     0 |              0 |                 0 | SELECT pubname FROM pg_catalog.pg_publication WHERE pubname LIKE $1
+   873973119508874970 | 26348 |  3413.385541999992 |  0.1295500812964928 | 26348 |              0 |                 0 | select max(age(datfrozenxid)) from pg_database
+(20 rows)
+
+=== §11 Replication slots — retained WAL ===
+ slot_name | plugin | slot_type | database | active | restart_lsn | confirmed_flush_lsn | retained_wal 
+-----------+--------+-----------+----------+--------+-------------+---------------------+--------------
+(0 rows)
+
+=== §12 Physical replication status (run on primary) ===
+ pid | usename | application_name | client_addr | state | sync_state | sent_lsn | write_lsn | flush_lsn | replay_lsn | replay_lag_bytes | write_lag | flush_lag | replay_lag 
+-----+---------+------------------+-------------+-------+------------+----------+-----------+-----------+------------+------------------+-----------+-----------+------------
+(0 rows)
+
+=== §13 High-write tables (WAL pressure candidates) ===
+ schemaname |         relname         | n_tup_ins | n_tup_upd | n_tup_del | n_tup_hot_upd | n_dead_tup 
+------------+-------------------------+-----------+-----------+-----------+---------------+------------
+ public     | wal_drill_records       |   8000000 |   8000000 |         0 |             0 |    8000000
+ public     | av_starvation_drill_4   |         0 |   1000000 |         0 |             5 |    1000000
+ public     | av_starvation_drill_1   |         0 |   1000000 |         0 |             5 |    1000000
+ public     | av_starvation_drill_2   |         0 |   1000000 |         0 |             5 |    1000000
+ public     | av_starvation_drill_3   |         0 |   1000000 |         0 |             5 |    1000000
+ public     | av_starvation_drill_5   |         0 |   1000000 |         0 |             5 |    1000000
+ public     | bloat_drill_records     |         0 |    866666 |         0 |        123960 |     866664
+ public     | index_bloat_drill       |         0 |    142857 |         0 |             0 |     285410
+ public     | lock_test_workflow_jobs |         0 |         0 |         0 |             0 |          0
+ public     | temp_spill_sort_drill   |         0 |         0 |         0 |             0 |          0
+ public     | lock_test_parent        |         0 |         0 |         0 |             0 |          0
+ public     | slowq_json_events       |         0 |         0 |         0 |             0 |          0
+ public     | slowq_customers         |         0 |         0 |         0 |             0 |          0
+ public     | temp_spill_join_b       |         0 |         0 |         0 |             0 |          0
+ public     | temp_spill_group_drill  |         0 |         0 |         0 |             0 |          0
+ public     | lock_test_credits       |         0 |         0 |         0 |             0 |          0
+ public     | lock_test_job_queue     |         0 |         0 |         0 |             0 |          0
+ public     | lock_test_mvw           |         0 |         0 |         0 |             0 |          0
+ public     | slowq_orders            |         0 |         0 |         0 |             0 |          0
+ public     | lock_test_accounts      |         0 |         0 |         0 |             0 |          0
+ public     | temp_spill_join_a       |         0 |         0 |         0 |             0 |          0
+ public     | lock_test_child         |         0 |         0 |         0 |             0 |          0
+ public     | lock_test_mvw_base      |         0 |         0 |         0 |             0 |          0
+(23 rows)
+
+=== §14 Long transactions (delays vacuum cleanup + WAL retention) ===
+  pid  | usename  | application_name |  state   | backend_xmin |    xact_age     |                             query                             
+-------+----------+------------------+----------+--------------+-----------------+---------------------------------------------------------------
+ 15987 |          |                  | active   |    769599765 | 00:00:25.985477 | autovacuum: VACUUM public.av_starvation_drill_2
+ 15744 |          |                  | active   |    769599765 | 00:00:18.762546 | autovacuum: VACUUM public.av_starvation_drill_1
+ 16200 |          |                  | active   |    769599765 | 00:00:12.058767 | autovacuum: VACUUM public.av_starvation_drill_5
+ 16243 |          |                  | starting |    769599795 | 00:00:00.006091 | 
+ 16209 | postgres | psql             | active   |    769599795 | 00:00:00        | SELECT                                                       +
+       |          |                  |          |              |                 |     pid, usename, application_name, state, backend_xmin,     +
+       |          |                  |          |              |                 |     now() - xact_start AS xact_age, left(query, 200) AS query+
+       |          |                  |          |              |                 | FROM pg_stat_activity                                        +
+       |          |                  |          |              |                 | WHERE xact_start IS NOT NULL                                 +
+       |          |                  |          |              |                 | ORDER BY xact_start;
+(5 rows)
+
+Sweep complete. Cross-reference: long transactions pinning old snapshots are
+also drilled in ../02-locks-deadlocks-blocking-queries (script 12).
+✔ [02] Diagnostic sweep (autovacuum, bloat, replication, temp files, monitoring gaps) (ok, 12s)
+
+No cleanup step: drill tables/slot/sessions are left in place so hunters
+have a real window to detect them.
+
+======================================================================
+ SUMMARY
+======================================================================
+  ✔ [01] Setup bloat-drill table shells                            2s
+  ✘ [03] Table bloat from UPDATE/DELETE churn                     83s  (exit 1)
+  ✘ [04] Index bloat outpaces table bloat                        165s  (exit 1)
+  ✔ [05] Autovacuum worker starvation (concurrent vacuum-eligible tables)   165s
+  ✔ [06] Stale statistics → bad plan                           165s
+  ✔ [07-sort] Temp-file spill: sort                              239s
+  ✔ [07-hash] Temp-file spill: hash join                         239s
+  ✔ [07-group] Temp-file spill: hash aggregate                   239s
+  ✔ [08] CREATE INDEX build temp/maintenance_work_mem spike      239s
+  ✘ [09] Inactive replication slot retains WAL                   239s  (exit 1)
+  ✔ [10] Write surge → replica lag                             746s
+  ✔ [02] Diagnostic sweep (autovacuum, bloat, replication, temp files, monitoring gaps)    12s
+----------------------------------------------------------------------
+  12 step(s) run, 3 non-zero exit(s)
+  Logs: ./run_all_logs/20260710_073910
+======================================================================
+rajarsi@syscloud-1J93:/mnt/c/SysCloud/Tools/dba-issues/hunter-simulations/04-autovacuum-bloat-replication-temp-files$ 

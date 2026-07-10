@@ -26,10 +26,11 @@
 # Usage:
 #   ./06_simulate_advisory_lock.sh [lock_key] [hold_seconds] [--yes]
 #
-# Defaults: lock_key=99999, hold_seconds=900 — clears the hunter's 300s poll
-# interval (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of
-# overlap so AL-1 advisory_lock_blocking (waiter_count>=1) is reliably
-# sampled. CEILING WARNING: SysCloud baseline lock_timeout=10s/statement_timeout=5min
+# Defaults: lock_key=99999, hold_seconds=8 — sized so the whole drill
+# completes in well under 20s for fast local/CI drilling. This is short of
+# the hunter's 300s poll interval, so it is NOT reliable for hunter-detection
+# runs (AL-1 advisory_lock_blocking) — pass a larger hold_seconds (e.g. 900)
+# for that. CEILING WARNING: SysCloud baseline lock_timeout=10s/statement_timeout=5min
 # (runbook §7.3) would otherwise abort Session B's blocking pg_advisory_lock()
 # call almost immediately — disabled below for these sessions only.
 # Credentials come from .env in the current directory (see simulations/.env.example).
@@ -40,7 +41,7 @@ set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 LOCK_KEY="${1:-99999}"
-HOLD_SECONDS="${2:-900}"
+HOLD_SECONDS="${2:-8}"
 
 echo "=== DRILL: Advisory Lock Contention ==="
 echo "Target    : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -108,5 +109,5 @@ echo "         WHERE query ILIKE '%pg_advisory_lock%';\""
 echo ""
 echo "Session A releases after ${HOLD_SECONDS}s. Waiting..."
 wait
-ensure_min_duration 30
+ensure_min_duration 12
 echo "All drill sessions have completed."

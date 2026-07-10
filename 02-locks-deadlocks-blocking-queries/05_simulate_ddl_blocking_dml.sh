@@ -10,9 +10,9 @@
 # Reproduces the cascading queue pattern:
 #
 #   t=0s  Session A: long-running UPDATE (holds RowExclusiveLock for DML_SECONDS)
-#   t=5s  Session B: CREATE INDEX (non-concurrent) → waits behind A
+#   t=2s  Session B: CREATE INDEX (non-concurrent) → waits behind A
 #                    Once A completes, B acquires ShareLock (blocks all DML)
-#   t=8s  Session C: simple UPDATE → queues behind B's DDL lock
+#   t=3s  Session C: simple UPDATE → queues behind B's DDL lock
 #                    Even though B hasn't started yet — it queues behind the DDL
 #                    intent, not A's DML
 #
@@ -28,10 +28,10 @@
 # Usage:
 #   ./05_simulate_ddl_blocking_dml.sh [dml_hold_seconds] [--yes]
 #
-# Default: dml_hold_seconds=900 — clears the hunter's 300s poll interval
-# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap so
-# DC-1 ddl_blocking_detected is reliably sampled while Session B (the queued
-# CREATE INDEX) is waiting.
+# Default: dml_hold_seconds=6 — sized so the whole drill completes in well
+# under 20s for fast local/CI drilling. This is short of the hunter's 300s
+# poll interval, so it is NOT reliable for hunter-detection runs (DC-1
+# ddl_blocking_detected) — pass a larger dml_hold_seconds (e.g. 900) for that.
 #
 # CEILING WARNING: at the SysCloud baseline (runbook §7.3: lock_timeout=10s,
 # statement_timeout=5min) Session B/C below would abort while queued long
@@ -44,7 +44,7 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-DML_HOLD="${1:-900}"   # How long Session A's UPDATE holds the lock
+DML_HOLD="${1:-6}"   # How long Session A's UPDATE holds the lock
 
 echo "=== DRILL: DDL Blocking DML Cascade ==="
 echo "Target          : ${PGHOST}:${PGPORT}/${PGDATABASE}"
@@ -74,10 +74,10 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
 PID_A=$!
 echo "  Session A spawned (shell pid ${PID_A}) — holding RowExclusiveLock"
 
-sleep 5
+sleep 2
 
 echo ""
-echo "--- Session B (t=5s): CREATE INDEX (non-concurrent) — will queue behind A ---"
+echo "--- Session B (t=2s): CREATE INDEX (non-concurrent) — will queue behind A ---"
 echo "    Once A releases, B acquires ShareLock and blocks ALL subsequent DML."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
@@ -89,10 +89,10 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
 PID_B=$!
 echo "  Session B spawned (shell pid ${PID_B}) — waiting to acquire lock for CREATE INDEX"
 
-sleep 3
+sleep 1
 
 echo ""
-echo "--- Session C (t=8s): simple UPDATE — queues behind B's DDL lock request ---"
+echo "--- Session C (t=3s): simple UPDATE — queues behind B's DDL lock request ---"
 echo "    Demonstrates: unrelated DML is blocked the moment DDL is queuing."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
@@ -128,4 +128,4 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "DROP INDEX IF EXISTS idx_drill_balance;" 2>/dev/null || true
 echo "Drill index dropped (if it was created)."
 
-ensure_min_duration 30
+ensure_min_duration 12

@@ -34,14 +34,14 @@
 #   ./16_simulate_connection_exhaustion.sh [mode] [conn_count] [hold_seconds] [--yes]
 #
 # mode: idle_connection_flood (default) | idle_in_txn_flood
-# Defaults: conn_count=20, hold_seconds=900
+# Defaults: conn_count=20, hold_seconds=8
 #
 # This script isn't gated by any check in THIS hunter
 # (actions/locks-deadlocks-blocking-queries.jsonc has no connections source —
 # that lives in connection-exhaustion.jsonc, see hunter-simulations/01-connection-exhaustion/
-# for the dedicated, much more aggressive drill set). hold_seconds is bumped
-# to 900 only for consistency with this folder's other drills and to survive
-# the SysCloud baseline statement_timeout=5min (runbook §7.3, disabled below).
+# for the dedicated, much more aggressive drill set). hold_seconds=8 is sized
+# so the whole drill completes in well under 20s for fast local/CI drilling
+# — pass a larger hold_seconds (e.g. 900) for a wider observation window.
 # conn_count is left at 20 (not re-tuned here) — keep it well below
 # max_connections on the drill instance; use topic 01's drills for a real
 # connection-exhaustion intensity pass.
@@ -54,7 +54,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 MODE="${1:-idle_connection_flood}"
 CONN_COUNT="${2:-20}"
-HOLD_SECONDS="${3:-900}"
+HOLD_SECONDS="${3:-8}"
 
 if [[ "${MODE}" != "idle_connection_flood" && "${MODE}" != "idle_in_txn_flood" ]]; then
     echo "Usage: $0 [idle_connection_flood|idle_in_txn_flood] [conn_count] [hold_seconds] [--yes]"
@@ -159,5 +159,5 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
                 current_setting('max_connections')::int  AS max,
                 round(100.0 * (SELECT count(*) FROM pg_stat_activity)
                     / current_setting('max_connections')::int, 1) AS pct_used;"
-ensure_min_duration 30
+ensure_min_duration 12
 echo "Drill complete."

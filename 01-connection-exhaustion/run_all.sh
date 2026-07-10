@@ -13,11 +13,15 @@
 #
 # No mitigation/cleanup step, no confirmation gate: drills fire immediately
 # and drill sessions are left running/expiring on their own so the hunters
-# have a real window to detect them. actions/connection-exhaustion.jsonc
-# polls every 300s — fast mode holds for 600s (2 poll ticks of margin), full
-# mode holds for 2400s (~8 ticks), matching each drill script's own extreme
-# defaults. The previous fast-mode default (25s) was well UNDER one poll
-# tick and could be missed entirely; that was a real gap, not just caution.
+# have a real window to detect them. Both --fast and --full hold for 8s,
+# matching each drill script's own fast-drilling default — capped so a full
+# run_all.sh pass finishes in well under 20s per drill. actions/
+# connection-exhaustion.jsonc polls every 300s, so hunter-detection
+# reliability is NOT guaranteed at this hold length in either mode; edit
+# N06_HOLD/N07_HOLD/N10_HOLD/N11_HOLD (and N09's pg_sleep) below to e.g. 2400
+# (~8 poll ticks of overlap) if you need reliable hunter-side detection.
+# --full only differs from --fast in connection/attempt counts now, not hold
+# duration.
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Same rules as every script in this folder.
 #
@@ -25,10 +29,9 @@
 #   ./run_all.sh [--fast|--full] [--only 06,07] [--skip 09,11]
 #                [--with-baseline] [--list] [--yes]
 #
-#   --fast          Small scale/duration (default) — full manifest finishes
-#                    in a few minutes.
+#   --fast          Small scale (default) — full manifest finishes in ~20s.
 #   --full          Doc-example scale (matches README quick-start numbers) —
-#                    slower, closer to a real incident's shape.
+#                    larger connection/attempt counts, same short hold.
 #   --only 06,07    Only run these drill/detection ids (comma list).
 #   --skip 09       Skip these ids (e.g. 09 if DRILL_ROLE isn't configured,
 #                    or 11 if PgBouncer isn't in session mode).
@@ -79,17 +82,17 @@ done
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-./run_all_logs/$(date +%Y%m%d_%H%M%S 2>/dev/null || echo run)}"
 
 if [[ "${FAST}" -eq 1 ]]; then
-    N06_SESS=100; N06_HOLD=600
-    N07_CONN=200; N07_HOLD=600
-    N09_LIM=15;   N09_ATT=30
-    N10_CONN=200; N10_HOLD=600
-    N11_POOL=10;  N11_HOLD=600
+    N06_SESS=100; N06_HOLD=8
+    N07_CONN=200; N07_HOLD=8
+    N09_LIM=8;    N09_ATT=15
+    N10_CONN=200; N10_HOLD=8
+    N11_POOL=10;  N11_HOLD=8
 else
-    N06_SESS=200; N06_HOLD=2400
-    N07_CONN=500; N07_HOLD=2400
-    N09_LIM=25;   N09_ATT=60
-    N10_CONN=500; N10_HOLD=2400
-    N11_POOL=20;  N11_HOLD=2400
+    N06_SESS=200; N06_HOLD=8
+    N07_CONN=500; N07_HOLD=8
+    N09_LIM=12;   N09_ATT=20
+    N10_CONN=500; N10_HOLD=8
+    N11_POOL=20;  N11_HOLD=8
 fi
 
 echo "=== Connection Exhaustion — run_all.sh (${MODE_LABEL}) ==="

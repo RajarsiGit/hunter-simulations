@@ -16,12 +16,13 @@
 --   psql -h $PGHOST -p $PGPORT -U $PGUSER -d $PGDATABASE \
 --        -f 01_setup_slow_query_tables.sql
 --
--- EXTREME SIZING: seeds ~27M rows total so every downstream drill has huge
--- data volume to hammer the planner/IO hard and clear every hunter threshold
--- (queries/slow-queries/slow-queries-seq-scans.sql: seq_scan>1000, n_live_tup>
--- 100k, size>10MB, ratio>0.80; slow-queries-stale-stats.sql: n_live_tup>100k)
--- with a huge margin. Takes several minutes depending on instance size —
--- this is intentional.
+-- FAST SIZING: seeds ~550k rows total — sized so setup finishes in seconds
+-- and every downstream drill script (02-07) completes in <=20s by default,
+-- while each table still clears the hunter's n_live_tup>100k pre-filter
+-- (queries/slow-queries/slow-queries-seq-scans.sql; slow-queries-stale-stats.sql)
+-- with margin. This intentionally trades away the wide multi-minute hunter-
+-- poll observation window the original ~27M-row sizing gave; not tuned for
+-- live hunter-detection reliability, only for a quick local drill run.
 -- =============================================================================
 
 \timing on
@@ -52,7 +53,7 @@ SELECT
     now() - (random() * interval '180 days')
 FROM (
     SELECT random() AS r
-    FROM generate_series(1, 12000000)
+    FROM generate_series(1, 200000)
 ) s;
 
 ANALYZE slowq_orders;
@@ -74,7 +75,7 @@ INSERT INTO slowq_customers (email, status)
 SELECT
     'user' || g || '@example.com',
     CASE WHEN random() < 0.8 THEN 'active' ELSE 'inactive' END
-FROM generate_series(1, 3000000) AS g;
+FROM generate_series(1, 150000) AS g;
 
 ANALYZE slowq_customers;
 
@@ -93,7 +94,7 @@ SELECT jsonb_build_object(
     'status', substr(md5(random()::text), 1, 8),
     'payload', repeat(md5(random()::text), 10)
 )
-FROM generate_series(1, 12000000);
+FROM generate_series(1, 200000);
 
 ANALYZE slowq_json_events;
 

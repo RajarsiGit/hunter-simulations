@@ -35,19 +35,17 @@ echo "--- EXPLAIN on unindexed jsonb field extraction (expect Seq Scan, high CPU
 run_explain
 
 echo ""
-echo "--- Sustaining load so the slow-queries hunter can actually observe it ---"
+echo "--- Sustaining load briefly so pg_stat_activity/seq_scan show a signal ---"
 echo "    A single EXPLAIN above finishes in well under a second and only bumps"
-echo "    seq_scan by 1 — nowhere near what the live hunter needs. duration_seconds"
-echo "    is measured from this statement's query_start, so a 2400s hold clears"
-echo "    not just query_slow's >=30s warning threshold but query_critical's"
-echo "    >=1800s CRITICAL threshold too (actions/slow-queries.jsonc Q-2), with"
-echo "    600s to spare over the hunter's 300s poll interval (>=7 ticks of"
-echo "    overlap — EXTREME margin). Also bursts 200000 seq scans"
-echo "    (seq_scan_tables, >1000 threshold, ratio>0.80) so that check fires hard too."
+echo "    seq_scan by 1. This holds the session active for a few seconds and"
+echo "    bursts a few hundred seq scans — kept lower than the other drills'"
+echo "    burst count here since each scan pays real per-row jsonb-deserialize"
+echo "    cost (the whole point of this drill) — sized for a <=20s drill run,"
+echo "    not for clearing the hunter's 300s poll interval/query_critical threshold."
 hold_session_active "drill_json_cpu_spike" \
-    "SELECT count(*) AS c FROM slowq_json_events WHERE data->>'status' LIKE 'a%'" 2400
+    "SELECT count(*) AS c FROM slowq_json_events WHERE data->>'status' LIKE 'a%'" 5
 run_seq_scan_burst "drill_json_cpu_spike" \
-    "count(*) FROM slowq_json_events WHERE data->>'status' LIKE 'a%'" 200000
+    "count(*) FROM slowq_json_events WHERE data->>'status' LIKE 'a%'" 300
 wait "${HOLD_PID}" 2>/dev/null || true
 
 echo ""

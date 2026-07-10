@@ -1,0 +1,317 @@
+rajarsi@syscloud-1J93:/mnt/c/SysCloud/Tools/dba-issues/hunter-simulations/03-slow-queries$ DRILL_YES=1 ./run_all.sh
+=== Slow Queries — run_all.sh (fast) ===
+Target: postgres@dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com:5432/Drill_DB
+
+
+───────────────────────────────────────────────────────────────────
+▶ [01] Setup slowq_* tables (~550k rows, no secondary indexes)
+  psql -h dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com -p 5432 -U postgres -d Drill_DB -f 01_setup_slow_query_tables.sql
+───────────────────────────────────────────────────────────────────
+Timing is on.
+DROP TABLE
+Time: 231.427 ms
+CREATE TABLE
+Time: 224.098 ms
+INSERT 0 200000
+Time: 651.305 ms
+ANALYZE
+Time: 232.476 ms
+DROP TABLE
+Time: 210.619 ms
+CREATE TABLE
+Time: 203.771 ms
+INSERT 0 150000
+Time: 421.183 ms
+ANALYZE
+Time: 259.192 ms
+DROP TABLE
+Time: 210.890 ms
+CREATE TABLE
+Time: 197.189 ms
+INSERT 0 200000
+Time: 933.760 ms
+ANALYZE
+Time: 280.470 ms
+Timing is off.
+    table_name     | row_count 
+-------------------+-----------
+ slowq_customers   |    150000
+ slowq_orders      |    200000
+ slowq_json_events |    200000
+(3 rows)
+
+Setup complete. No indexes exist beyond primary keys — that is intentional;
+these drills only demonstrate the problem, they never fix it.
+✔ [01] Setup slowq_* tables (~550k rows, no secondary indexes) (ok, 6s)
+▶ [02] Missing-index seq scan — launching in parallel: ./02_simulate_missing_index_scan.sh
+▶ [03] Function-wrapped predicate defeats index — launching in parallel: ./03_simulate_function_wrapped_predicate.sh
+▶ [04] Deep OFFSET pagination cost growth — launching in parallel: ./04_simulate_offset_pagination.sh 100000
+▶ [05] JSONB field extraction CPU spike — launching in parallel: ./05_simulate_json_processing_spike.sh
+▶ [06] Stale planner statistics bad estimate — launching in parallel: ./06_simulate_stale_statistics.sh
+▶ [07] Application retry storm — launching in parallel: ./07_simulate_retry_storm.sh 15 5
+
+--- Waiting for 6 parallel drill(s) to finish ---
+✔ [02] Missing-index seq scan (ok, parallel batch 58s)
+✔ [03] Function-wrapped predicate defeats index (ok, parallel batch 77s)
+✔ [04] Deep OFFSET pagination cost growth (ok, parallel batch 77s)
+✔ [05] JSONB field extraction CPU spike (ok, parallel batch 77s)
+✔ [06] Stale planner statistics bad estimate (ok, parallel batch 77s)
+✔ [07] Application retry storm (ok, parallel batch 77s)
+
+───────────────────────────────────────────────────────────────────
+▶ [08] Diagnostic sweep (active queries, pg_stat_statements, missing-index/stale-stats candidates)
+  psql -h dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com -p 5432 -U postgres -d Drill_DB -f 08_diagnostic_query_sweep.sql
+───────────────────────────────────────────────────────────────────
+=== 1. Currently active queries, longest-running first ===
+  pid  | usename  | datname  | application_name | state  | wait_event_type | wait_event | duration |                query                 
+-------+----------+----------+------------------+--------+-----------------+------------+----------+--------------------------------------
+ 27748 | postgres | Drill_DB | psql             | active |                 |            | 00:00:00 | SELECT                              +
+       |          |          |                  |        |                 |            |          |     pid,                            +
+       |          |          |                  |        |                 |            |          |     usename,                        +
+       |          |          |                  |        |                 |            |          |     datname,                        +
+       |          |          |                  |        |                 |            |          |     application_name,               +
+       |          |          |                  |        |                 |            |          |     state,                          +
+       |          |          |                  |        |                 |            |          |     wait_event_type,                +
+       |          |          |                  |        |                 |            |          |     wait_event,                     +
+       |          |          |                  |        |                 |            |          |     now() - query_start AS duration,+
+       |          |          |                  |        |                 |            |          |     left(query, 200) AS query       +
+       |          |          |                  |        |                 |            |          | FROM pg_stat_activity
+(1 row)
+
+
+=== 2. CPU-heavy wait events (NULL wait_event_type among active = likely on-CPU) ===
+ wait_event_type | wait_event | count 
+-----------------+------------+-------
+                 |            |     1
+(1 row)
+
+
+=== 3. Top queries by total execution time (requires pg_stat_statements) ===
+       queryid        | calls | total_exec_time_ms | mean_exec_time_ms |   rows   | shared_blks_hit | shared_blks_read | temp_blks_written |                                                                   query                                                                   
+----------------------+-------+--------------------+-------------------+----------+-----------------+------------------+-------------------+-------------------------------------------------------------------------------------------------------------------------------------------
+  6658399802807205227 | 50488 |      2460223785.55 |          48728.88 |    50488 |      4738395827 |                0 |                 0 | SELECT count(*) FROM slowq_orders WHERE status = $1
+ -8886085649470066503 |   598 |       357608457.03 |         598007.45 |      598 |               0 |                0 |                 0 | SELECT pg_sleep($1)
+ -8886085649470066503 |   500 |       300000291.03 |         600000.58 |      500 |               0 |                0 |                 0 | SELECT pg_sleep($1)
+ -6243646336251725939 |     2 |         2492042.92 |        1246021.46 |        2 |           26693 |                0 |                 0 | SELECT (SELECT count(*) FROM (SELECT * FROM slowq_customers WHERE lower(email) = lower($1)) _sustain_sub) AS matched, pg_sleep($2)
+  -946483784687663509 |     2 |         2474336.91 |        1237168.46 |        2 |           91123 |                0 |                 0 | SELECT (SELECT count(*) FROM (SELECT * FROM slowq_orders WHERE status = $1) _sustain_sub) AS matched, pg_sleep($2)
+ -4743829303777724588 |     2 |         2405117.18 |        1202558.59 |        2 |               0 |                0 |                 0 | SELECT (SELECT count(*) FROM (SELECT count(*) AS c FROM slowq_json_events WHERE data->>$1 LIKE $2) _sustain_sub) AS matched, pg_sleep($3)
+ -3703052699806589126 |     3 |         1006109.83 |         335369.94 |        0 |          181086 |                2 |             62816 | EXPLAIN (ANALYZE, BUFFERS)                                                                                                               +
+                      |       |                    |                   |          |                 |                  |                   |                   SELECT * FROM slowq_orders                                                                                             +
+                      |       |                    |                   |          |                 |                  |                   |                   ORDER BY created_at DESC                                                                                               +
+                      |       |                    |                   |          |                 |                  |                   |                   OFFSET $1 LIMIT $2
+ -2149737489700518058 |     2 |          601064.40 |         300532.20 | 16000000 |        58411596 |          2000566 |                 0 | INSERT INTO wal_drill_records (payload)                                                                                                  +
+                      |       |                    |                   |          |                 |                  |                   |          SELECT repeat(md5(random()::text), $1) FROM generate_series($2, $3)
+ -8219798391760807376 |     2 |          550165.49 |         275082.74 | 12000000 |        91130079 |          6087779 |                 0 | UPDATE wal_drill_records SET payload = repeat(md5(random()::text), $1)                                                                   +
+                      |       |                    |                   |          |                 |                  |                   |          WHERE id % $2 = $3
+  5555319702428139359 |     4 |          497182.86 |         124295.72 |      120 |            2685 |               16 |                 0 | SELECT DATNAME, LARGEST_DB_BYTES, ALL_DB_BYTES, OLDEST_XACT_SEC, OLDEST_XACT_XID                                                         +
+                      |       |                    |                   |          |                 |                  |                   | FROM (                                                                                                                                   +
+                      |       |                    |                   |          |                 |                  |                   | SELECT DATNAME, DATALLOWCONN, CONNECTIONS, BYTES                                                                                         +
+                      |       |                    |                   |          |                 |                  |                   | ,MAX(BYTES) OVER () LARGEST_DB_BYTES                                                                                                     +
+                      |       |                    |                   |          |                 |                  |                   | ,SUM(BYTES) OVER () ALL_DB
+ -2881240130936339947 |     1 |          414670.28 |         414670.28 |        0 |             126 |               23 |                 0 | ALTER TABLE lock_test_accounts ADD COLUMN queue_amplification_drill TEXT
+  9096616591660511517 |     3 |          409158.95 |         136386.32 |        0 |           53246 |               15 |             27085 | CREATE INDEX IF NOT EXISTS idx_slowq_customers_email ON slowq_customers(email)
+  9060274257551206874 |     3 |          314708.90 |         104902.97 |        3 |          184293 |                0 |                 0 | SELECT created_at FROM slowq_orders                                                                                                      +
+                      |       |                    |                   |          |                 |                  |                   |                                  ORDER BY created_at DESC                                                                                +
+                      |       |                    |                   |          |                 |                  |                   |                                  OFFSET $1 LIMIT $2
+  7524252207788339177 |     2 |          269880.53 |         134940.27 |  1333332 |        10123761 |           612332 |                 0 | UPDATE bloat_drill_records SET tenant_id = $1                                                                                            +
+                      |       |                    |                   |          |                 |                  |                   |          WHERE id % $2 = $3
+  -911341594284991063 |     2 |          230534.11 |         115267.05 |        0 |             471 |           800058 |            998090 | CREATE INDEX idx_temp_spill_sort_drill_payload_regular                                                                                   +
+                      |       |                    |                   |          |                 |                  |                   |          ON temp_spill_sort_drill(payload)
+  1322150273232299542 |     4 |          216680.84 |          54170.21 |      830 |            3311 |                7 |                 0 | SELECT db.datname,pg_database_size(db.oid) FROM pg_catalog.pg_database db
+  -961033450806074405 |     4 |          168567.39 |          42141.85 |        0 |          270729 |                0 |                 0 | EXPLAIN (ANALYZE, BUFFERS)                                                                                                               +
+                      |       |                    |                   |          |                 |                  |                   |                       SELECT * FROM slowq_orders WHERE status = $1
+   640261383714485829 |     3 |          153927.67 |          51309.22 |        0 |           52405 |                3 |                 0 | EXPLAIN (ANALYZE, BUFFERS)                                                                                                               +
+                      |       |                    |                   |          |                 |                  |                   |                       SELECT * FROM slowq_customers WHERE lower(email) = lower($1)
+ -6603025079444865653 |     3 |          145318.81 |          48439.60 |        0 |          187824 |                0 |                 0 | EXPLAIN (ANALYZE, BUFFERS)                                                                                                               +
+                      |       |                    |                   |          |                 |                  |                   |                   SELECT * FROM slowq_orders                                                                                             +
+                      |       |                    |                   |          |                 |                  |                   |                   WHERE created_at < $1                                                                                                  +
+                      |       |                    |                   |          |                 |                  |                   |                   ORDER BY created_at DESC LIMIT $2
+ -5800715865261506021 |     4 |          140234.11 |          35058.53 | 36200000 |       113591636 |                0 |                 0 | INSERT INTO slowq_json_events (data)                                                                                                     +
+                      |       |                    |                   |          |                 |                  |                   | SELECT jsonb_build_object(                                                                                                               +
+                      |       |                    |                   |          |                 |                  |                   |     $1, (random() * $2)::int,                                                                                                            +
+                      |       |                    |                   |          |                 |                  |                   |     $3, substr(md5(random()::text), $4, $5),                                                                                             +
+                      |       |                    |                   |          |                 |                  |                   |     $6, repeat(md5(random()::text), $7)                                                                                                  +
+                      |       |                    |                   |          |                 |                  |                   | )                                                                                                                                        +
+                      |       |                    |                   |          |                 |                  |                   | FROM generate_serie
+(20 rows)
+
+
+=== 4. Highest mean-latency queries called more than 10 times (possible N+1) ===
+ calls | mean_exec_time_ms | max_exec_time_ms | rows  |                                                                                                  query                                                                                                   
+-------+-------------------+------------------+-------+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+   500 |         600000.58 |        600008.78 |   500 | SELECT pg_sleep($1)
+   598 |         598007.45 |        600004.75 |   598 | SELECT pg_sleep($1)
+ 50488 |          48728.88 |         89300.22 | 50488 | SELECT count(*) FROM slowq_orders WHERE status = $1
+    32 |             25.65 |           801.54 |     0 | CREATE TABLE IF NOT EXISTS public.rds_replication_info_heartbeat(key VARCHAR(255) PRIMARY KEY, value VARCHAR(255))
+    13 |             25.49 |           307.57 |    25 | WITH all_sessions AS (                                                                                                                                                                                  +
+       |                   |                  |       |                                                                                                                                                                                                         +
+       |                   |                  |       |     SELECT                                                                                                                                                                                              +
+       |                   |                  |       |         datname,                                                                                                                                                                                        +
+       |                   |                  |       |         pid,                                                                                                                                                                                            +
+       |                   |                  |       |                                                                                                                                                                                                         +
+       |                   |                  |       |         -- Session identifier — this is tick_state's dedupe key (request_id).                                                                                                                           +
+       |                   |                  |       |         --                                                                                                                                                                                              +
+       |                   |                  |       |         -- Active USER queries key on (databa
+    14 |             22.76 |           274.89 |    14 | WITH bloat AS (                                                                                                                                                                                         +
+       |                   |                  |       |     SELECT                                                                                                                                                                                              +
+       |                   |                  |       |         relname   AS table_name,                                                                                                                                                                        +
+       |                   |                  |       |         n_dead_tup,                                                                                                                                                                                     +
+       |                   |                  |       |         n_live_tup,                                                                                                                                                                                     +
+       |                   |                  |       |         CASE WHEN (n_live_tup + n_dead_tup) > $1                                                                                                                                                        +
+       |                   |                  |       |              THEN ROUND(n_dead_tup::numeric / (n_li
+    12 |             20.22 |            20.28 |    12 | SELECT count(*) FROM lock_test_accounts
+    23 |             10.21 |           232.41 |     0 | SELECT                                                                                                                                                                                                  +
+       |                   |                  |       |     p.proname                                                    AS func_name,                                                                                                                          +
+       |                   |                  |       |     n.nspname                                                    AS schema_name,                                                                                                                        +
+       |                   |                  |       |     CASE p.prokind                                                                                                                                                                                      +
+       |                   |                  |       |         WHEN $
+    37 |             10.16 |           192.09 |    37 | SELECT COUNT(*) AS count FROM pg_catalog.pg_roles WHERE pg_catalog.pg_has_role(rolname, $1, $2) AND rolname NOT IN ($3 /*, ... */) AND rolname NOT LIKE $4 AND (rolvaliduntil is null or rolvaliduntil >
+  2585 |              9.90 |         24410.03 |  2585 | SELECT count(*) FROM pg_roles WHERE rolsuper = $1 AND rolname != $2
+    45 |              9.58 |           179.32 |    45 | SELECT                                                                                                                                                                                                  +
+       |                   |                  |       |     $1                                                                   AS config_id,                                                                                                                  +
+       |                   |                  |       |     current_setting($2)                                          AS log_temp_files,                                                                                                                     +
+       |                   |                  |       |     (current_setting($
+    24 |              9.45 |           180.77 |    24 | WITH cohort AS MATERIALIZED (                                                                                                                                                                           +
+       |                   |                  |       |     SELECT pid, query_start, wait_event_type, wait_event, query                                                                                                                                         +
+       |                   |                  |       |     FROM pg_stat_activity                                                                                                                                                                               +
+       |                   |                  |       |     WHERE query_id = ($1)::bigint                                                                                                                                                                       +
+       |                   |                  |       |       AND state = $4                                                                                                                                                                                    +
+       |                   |                  |       | )                                                                                                                                                                                                       +
+       |                   |                  |       | SELECT                                                                                                                                                                                                  +
+       |                   |                  |       |     -- How many 
+    19 |              2.53 |            24.71 |    19 | SELECT                                                                                                                                                                                                  +
+       |                   |                  |       |     string_agg(                                                                                                                                                                                         +
+       |                   |                  |       |         format($2,                                                                                                                                                                                      +
+       |                   |                  |       |                q.short_query, pg_size_pretty(q.temp_written_bytes), q.calls, q.mean_ms),                                                                                                                +
+       |                   |                  |       |         $3 ORDER BY q.temp_written_bytes DESC                                                                                                                                                           +
+       |                   |                  |       |     )                  
+    37 |              2.46 |             2.82 |    37 | SELECT COUNT(*) AS count FROM pg_catalog.pg_roles WHERE NOT pg_catalog.pg_has_role(rolname, $1, $2) AND rolname NOT IN ($3 /*, ... */) AND rolname NOT LIKE $4 AND (rolvaliduntil is null or rolvalidunt
+    13 |              2.22 |            20.86 |    13 | SELECT                                                                                                                                                                                                  +
+       |                   |                  |       |     $1                                                          AS pool_id,                                                                                                                             +
+       |                   |                  |       |     current_setting($2)::int                                    AS max_connections,                                                                                                                     +
+       |                   |                  |       |     COUNT(*)                     
+  2585 |              1.92 |           401.23 |  2585 | SELECT count(*) FROM pg_show_all_settings() WHERE name = $1 AND setting SIMILAR TO $2
+    30 |              1.72 |             2.89 |    30 | SELECT                                                                                                                                                                                                  +
+       |                   |                  |       |     $1                                                          AS pool_id,                                                                                                                             +
+       |                   |                  |       |     current_setting($2)::int                                    AS max_connections,                                                                                                                     +
+       |                   |                  |       |     (SELECT setting::int FROM pg_
+   381 |              1.50 |           402.96 |  6197 | SELECT * FROM pg_stat_activity
+    19 |              1.38 |             3.34 |   300 | SELECT pid, usename, application_name,                                                                                                                                                                  +
+       |                   |                  |       |        now() - state_change AS duration,                                                                                                                                                                +
+       |                   |                  |       |        left(query, $1) AS last_query                                                                                                                                                                    +
+       |                   |                  |       | FROM   pg_stat_activity                                                                                                                                                                                 +
+       |                   |                  |       | WHERE  state = $2                                                                                                                                                                                       +
+       |                   |                  |       |   AND  state_change < now() - ($3 || $4):
+    45 |              1.18 |            15.18 |    19 | WITH db_stats AS (                                                                                                                                                                                      +
+       |                   |                  |       |     SELECT                                                                                                                                                                                              +
+       |                   |                  |       |         d.datname,                                                                                                                                                                                      +
+       |                   |                  |       |         d.temp_files,                                                                                                                                                                                   +
+       |                   |                  |       |         d.temp_bytes,                                                                                                                                                                                   +
+       |                   |                  |       |         d.deadlocks,                                                                                                                                                                                    +
+       |                   |                  |       |         d.stats_reset,                                                                                                                                                                                  +
+       |                   |                  |       |         GREATEST(                                                                                                                                                                                       +
+       |                   |                  |       |             EXTRACT($1 FROM (now() - COALESCE
+(20 rows)
+
+
+=== 5. Missing-index candidates (high seq_scan + high seq_tup_read) ===
+ schemaname |      relname      | seq_scan | seq_tup_read | idx_scan | n_live_tup 
+------------+-------------------+----------+--------------+----------+------------
+ public     | slowq_orders      |     2474 |    747250000 |        0 |     150000
+ public     | slowq_customers   |     2006 |    300600000 |        0 |     150000
+ public     | slowq_json_events |     1206 |     60400000 |        0 |     200000
+(3 rows)
+
+
+=== 6. Stale statistics candidates (high n_mod_since_analyze, old last_analyze) ===
+ schemaname |         relname         | n_live_tup | n_dead_tup | n_mod_since_analyze |         last_analyze          |       last_autoanalyze        
+------------+-------------------------+------------+------------+---------------------+-------------------------------+-------------------------------
+ public     | bloat_drill_records     |          0 |     866664 |              666666 |                               | 
+ public     | slowq_orders            |     150000 |          0 |              150000 |                               | 
+ public     | lock_test_job_queue     |          0 |          0 |                   0 |                               | 
+ public     | wal_drill_records       |   16026200 |          0 |                   0 |                               | 2026-07-10 08:04:32.070641+00
+ public     | slowq_json_events       |     200000 |          0 |                   0 | 2026-07-10 09:16:16.763603+00 | 
+ public     | av_starvation_drill_5   |    3000000 |          0 |                   0 |                               | 2026-07-10 07:44:27.783671+00
+ public     | lock_test_mvw           |          0 |          0 |                   0 |                               | 
+ public     | lock_test_accounts      |          0 |          0 |                   0 |                               | 
+ public     | temp_spill_join_a       |    3999546 |          0 |                   0 | 2026-07-10 07:39:32.762198+00 | 
+ public     | lock_test_child         |          0 |          0 |                   0 |                               | 
+ public     | lock_test_credits       |          0 |          0 |                   0 |                               | 
+ public     | av_starvation_drill_3   |    3000000 |          0 |                   0 |                               | 2026-07-10 07:41:06.811571+00
+ public     | lock_test_workflow_jobs |          0 |          0 |                   0 |                               | 
+ public     | av_starvation_drill_2   |    3000000 |          0 |                   0 |                               | 2026-07-10 07:42:04.493335+00
+ public     | temp_spill_sort_drill   |    8000000 |          0 |                   0 | 2026-07-10 07:39:52.910185+00 | 
+ public     | lock_test_parent        |          0 |          0 |                   0 |                               | 
+ public     | temp_spill_join_b       |    3999546 |          0 |                   0 | 2026-07-10 07:39:51.036039+00 | 
+ public     | av_starvation_drill_1   |    3000000 |          0 |                   0 |                               | 2026-07-10 07:47:15.204206+00
+ public     | slowq_customers         |     150000 |          0 |                   0 | 2026-07-10 09:16:14.960305+00 | 
+ public     | temp_spill_group_drill  |    7999892 |          0 |                   0 | 2026-07-10 07:39:31.038233+00 | 
+(20 rows)
+
+
+=== 7. Sessions grouped by application/client (retry-storm / connection-multiplication check) ===
+               application_name               | client_addr | sessions 
+----------------------------------------------+-------------+----------
+                                              |             |        8
+ DBeaver 26.1.2 - Metadata <postgres>         | 10.85.4.42  |        1
+ DBeaver 26.1.2 - SQLEditor <Script-3562.sql> | 10.85.4.42  |        1
+ psql                                         | 10.85.4.42  |        1
+ DBeaver 26.1.2 - Main <postgres>             | 10.85.4.42  |        1
+ app - 10.85.4.42:63314                       | 10.70.1.158 |        1
+ app - 10.85.4.42:51392                       | 10.70.1.158 |        1
+ PostgreSQL JDBC Driver                       |             |        1
+ pg_cron scheduler                            |             |        1
+ app - 10.85.4.42:63313                       | 10.70.1.158 |        1
+(10 rows)
+
+
+=== 8. Largest indexes with low usage (index bloat / unused-index candidates) ===
+ schemaname |        relname        |               indexrelname                | index_size | idx_scan 
+------------+-----------------------+-------------------------------------------+------------+----------
+ public     | temp_spill_sort_drill | idx_temp_spill_sort_drill_payload_regular | 3162 MB    |        0
+ public     | wal_drill_records     | wal_drill_records_pkey                    | 685 MB     |        0
+ public     | index_bloat_drill     | idx_index_bloat_drill_payload             | 165 MB     |        0
+ public     | av_starvation_drill_5 | av_starvation_drill_5_pkey                | 129 MB     |        0
+ public     | av_starvation_drill_4 | av_starvation_drill_4_pkey                | 129 MB     |        0
+ public     | av_starvation_drill_1 | av_starvation_drill_1_pkey                | 129 MB     |        0
+ public     | av_starvation_drill_2 | av_starvation_drill_2_pkey                | 129 MB     |        0
+ public     | av_starvation_drill_3 | av_starvation_drill_3_pkey                | 129 MB     |        0
+ public     | index_bloat_drill     | idx_index_bloat_drill_status              | 113 MB     |        0
+ public     | bloat_drill_records   | bloat_drill_records_pkey                  | 86 MB      |        0
+ public     | index_bloat_drill     | index_bloat_drill_pkey                    | 43 MB      |        0
+ public     | index_bloat_drill     | idx_index_bloat_drill_created             | 43 MB      |        0
+ public     | index_bloat_drill     | idx_index_bloat_drill_tenant              | 14 MB      |        0
+ public     | slowq_orders          | slowq_orders_pkey                         | 7696 kB    |        0
+ public     | slowq_customers       | idx_slowq_customers_email                 | 5968 kB    |        0
+ public     | slowq_json_events     | slowq_json_events_pkey                    | 4408 kB    |        0
+ public     | slowq_customers       | slowq_customers_pkey                      | 3312 kB    |        0
+ public     | lock_test_mvw         | idx_lock_test_mvw_category                | 16 kB      |        0
+ public     | lock_test_mvw_base    | lock_test_mvw_base_pkey                   | 16 kB      |        0
+ public     | lock_test_job_queue   | lock_test_job_queue_pkey                  | 16 kB      |        0
+(20 rows)
+
+
+NOTE: sections 3, 4 require: CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
+      (also requires shared_preload_libraries=pg_stat_statements at the instance
+      parameter-group level on RDS, which needs a reboot to take effect).
+✔ [08] Diagnostic sweep (active queries, pg_stat_statements, missing-index/stale-stats candidates) (ok, 3s)
+
+No cleanup step: slowq_* tables and any drill sessions are left in place
+so hunters have a real window to detect them.
+
+======================================================================
+ SUMMARY
+======================================================================
+  ✔ [01] Setup slowq_* tables (~550k rows, no secondary indexes)     6s
+  ✔ [02] Missing-index seq scan                                   58s
+  ✔ [03] Function-wrapped predicate defeats index                 77s
+  ✔ [04] Deep OFFSET pagination cost growth                       77s
+  ✔ [05] JSONB field extraction CPU spike                         77s
+  ✔ [06] Stale planner statistics bad estimate                    77s
+  ✔ [07] Application retry storm                                  77s
+  ✔ [08] Diagnostic sweep (active queries, pg_stat_statements, missing-index/stale-stats candidates)     3s
+----------------------------------------------------------------------
+  8 step(s) run, 0 non-zero exit(s)
+  Logs: ./run_all_logs/20260710_091609
+======================================================================
+rajarsi@syscloud-1J93:/mnt/c/SysCloud/Tools/dba-issues/hunter-simulations/03-slow-queries$ 

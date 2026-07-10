@@ -115,11 +115,14 @@ DRILL_YES=1 ./run_all.sh
 # Skip the two slower temp-spill sub-modes
 ./run_all.sh --skip 07-hash,07-group --yes
 
-# Even more extreme scale (tens-of-millions-row inserts, closer to or past a real incident)
+# Bigger row counts (~2x), still sized to keep each drill under 20s
 ./run_all.sh --full --yes
 ```
 
 ## Quick-start examples
+
+Every drill below finishes in well under 20s at its default row_count. Pass a
+larger row_count for wider margin above a threshold (longer run).
 
 ```bash
 # Detection first — always safe, no confirmation needed
@@ -127,33 +130,33 @@ psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDATABASE" \
      -f 02_bloat_vacuum_diagnostic_sweep.sql
 
 # Drill A — table bloat from update churn (agent-friendly non-interactive run)
-./03_simulate_table_bloat_update_churn.sh 1000000 80 --yes
+./03_simulate_table_bloat_update_churn.sh 100000 30 --yes
 
 # Drill B — index bloat
-DRILL_YES=1 ./04_simulate_index_bloat.sh 1000000
+DRILL_YES=1 ./04_simulate_index_bloat.sh 100000
 
 # Drill C — autovacuum worker starvation across 5 tables
-./05_simulate_autovacuum_worker_starvation.sh 5 3000000 --yes
+./05_simulate_autovacuum_worker_starvation.sh 5 100000 --yes
 
 # Drill D — stale statistics causing a bad plan
-./06_simulate_stale_statistics_bad_plan.sh 1000000 --yes
+./06_simulate_stale_statistics_bad_plan.sh 150000 --yes
 
 # Drill E — temp file spill, three modes (each resets stats itself when run
 # standalone like this — see script header; set SKIP_STATS_RESET=1 if you
 # want their spills to stack instead)
-./07_simulate_temp_file_spill.sh sort 8000000 --yes
-./07_simulate_temp_file_spill.sh hash_join 4000000 --yes
-./07_simulate_temp_file_spill.sh group_by 8000000 --yes
+./07_simulate_temp_file_spill.sh sort 600000 --yes
+./07_simulate_temp_file_spill.sh hash_join 300000 --yes
+./07_simulate_temp_file_spill.sh group_by 600000 --yes
 
 # Drill F — CREATE INDEX temp spike
-./08_simulate_create_index_temp_spike.sh 8000000 --yes
+./08_simulate_create_index_temp_spike.sh 600000 --yes
 
 # Drill G — inactive replication slot retains WAL (check disk headroom first — see script header)
-./09_simulate_replication_slot_wal_retention.sh 6000000 --yes
+./09_simulate_replication_slot_wal_retention.sh 500000 --yes
 
 # Drill H — write-surge replica lag (primary-only, or full with a real replica —
 # R-1/R-2 CANNOT fire without REPLICA_PGHOST pointed at a real attached replica)
-./10_simulate_replica_lag_write_surge.sh 8000000 --yes
+./10_simulate_replica_lag_write_surge.sh 100000 --yes
 REPLICA_PGHOST=<read-replica-endpoint> ./10_simulate_replica_lag_write_surge.sh 8000000 --yes
 ```
 

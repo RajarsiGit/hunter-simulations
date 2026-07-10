@@ -13,8 +13,8 @@
 #
 # Drill sequence:
 #   t=0s  Session A: long UPDATE on lock_test_accounts (holds RowExclusiveLock)
-#   t=5s  Session B: CREATE INDEX (non-concurrent) → waits for Session A
-#   t=8s  Session C: INSERT into lock_test_accounts → also blocked by pending DDL
+#   t=2s  Session B: CREATE INDEX (non-concurrent) → waits for Session A
+#   t=3s  Session C: INSERT into lock_test_accounts → also blocked by pending DDL
 #   Resolution A: wait for A to finish → B builds index → C executes
 #   Resolution B: pg_cancel_backend(B) → C unblocks immediately; reschedule index
 #
@@ -29,10 +29,10 @@
 # Usage:
 #   ./15_simulate_index_blocking.sh [dml_hold_seconds] [--yes]
 #
-# Default: dml_hold_seconds=900 — clears the hunter's 300s poll interval
-# (actions/locks-deadlocks-blocking-queries.jsonc) with 3 ticks of overlap so
-# DC-1 ddl_blocking_detected is reliably sampled while Session A holds the
-# lock Session B's CREATE INDEX is queued behind.
+# Default: dml_hold_seconds=6 — sized so the whole drill completes in well
+# under 20s for fast local/CI drilling. This is short of the hunter's 300s
+# poll interval, so it is NOT reliable for hunter-detection runs (DC-1
+# ddl_blocking_detected) — pass a larger dml_hold_seconds (e.g. 900) for that.
 #
 # COVERAGE GAP once A releases: CREATE INDEX on lock_test_accounts (5 rows,
 # 01_setup_lock_drill_tables.sql) then completes in milliseconds, so the
@@ -52,13 +52,13 @@ set -euo pipefail
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-DML_HOLD="${1:-900}"
+DML_HOLD="${1:-6}"
 
 echo "=== DRILL: Index Operation Blocking ==="
 echo "Target          : ${PGHOST}:${PGPORT}/${PGDATABASE}"
 echo "Session A (DML) : UPDATE held for ${DML_HOLD}s"
-echo "Session B (DDL) : CREATE INDEX (non-concurrent) — starts at t=5s"
-echo "Session C (DML) : INSERT — starts at t=8s, blocked behind pending index"
+echo "Session B (DDL) : CREATE INDEX (non-concurrent) — starts at t=2s"
+echo "Session C (DML) : INSERT — starts at t=3s, blocked behind pending index"
 echo ""
 echo "⚠️  Requires lock_test_accounts (run 01_setup_lock_drill_tables.sql first)."
 confirm_drill "Runs a non-concurrent CREATE INDEX that queues behind a DML and then blocks a subsequent INSERT." "$@"
@@ -82,10 +82,10 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
 PID_A=$!
 echo "  Session A spawned (shell pid ${PID_A}) — holding RowExclusiveLock"
 
-sleep 5
+sleep 2
 
 echo ""
-echo "--- Session B (t=5s): CREATE INDEX (non-concurrent) — queues behind Session A ---"
+echo "--- Session B (t=2s): CREATE INDEX (non-concurrent) — queues behind Session A ---"
 echo "    ShareLock required. Once A finishes, B blocks ALL subsequent DML."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
@@ -98,10 +98,10 @@ psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
 PID_B=$!
 echo "  Session B spawned (shell pid ${PID_B}) — waiting for Session A's lock"
 
-sleep 3
+sleep 1
 
 echo ""
-echo "--- Session C (t=8s): INSERT — blocks behind the queued CREATE INDEX ---"
+echo "--- Session C (t=3s): INSERT — blocks behind the queued CREATE INDEX ---"
 echo "    Demonstrates: unrelated DML queues behind a pending DDL lock request."
 
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
@@ -152,5 +152,5 @@ echo ""
 # Drop the drill index if Session B completed before it was cancelled
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "DROP INDEX IF EXISTS idx_drill_index_blocking_balance;" 2>/dev/null || true
-ensure_min_duration 30
+ensure_min_duration 12
 echo "Drill index cleaned up. Drill complete."

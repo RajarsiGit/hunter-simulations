@@ -37,20 +37,20 @@
 # Usage:
 #   ./05_simulate_autovacuum_worker_starvation.sh [table_count] [rows_per_table] [--yes]
 #
-# Defaults: table_count=5, rows_per_table=3000000 (was 3 / 1000000) — bigger
-# and more of them, so the concurrent VACUUMs both contend longer in
-# pg_stat_progress_vacuum and have a realistic shot at crossing query_slow's
-# 30s floor.
+# Defaults: table_count=5, rows_per_table=100000 — sized so the whole drill
+# finishes in well under 20s. This is small enough that the concurrent
+# VACUUMs likely won't cross query_slow's 30s floor (Q-1) on their own — pass
+# a larger rows_per_table for a slower drill with a realistic shot at that.
 #
-# Example: 5 tables, 3M rows each
-#   ./05_simulate_autovacuum_worker_starvation.sh 5 3000000
+# Example: 5 tables, 100k rows each
+#   ./05_simulate_autovacuum_worker_starvation.sh 5 100000
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 TABLE_COUNT="${1:-5}"
-ROWS_PER_TABLE="${2:-3000000}"
+ROWS_PER_TABLE="${2:-100000}"
 
 confirm_drill "This creates ${TABLE_COUNT} large tables (${ROWS_PER_TABLE} rows each, av_starvation_drill_N), churns each with updates, then fires concurrent VACUUM (ANALYZE) against all of them to show worker contention in pg_stat_progress_vacuum." "$@"
 
@@ -111,5 +111,5 @@ echo "Remediation levers (tune cautiously via parameter group, not blind global 
 echo "  autovacuum_max_workers, autovacuum_vacuum_cost_limit, autovacuum_vacuum_cost_delay,"
 echo "  maintenance_work_mem. For emergency single-table relief: VACUUM (ANALYZE) <table>;"
 echo ""
-ensure_min_duration 20
+ensure_min_duration 10
 echo "Drill complete."

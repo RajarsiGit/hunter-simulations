@@ -24,12 +24,13 @@
 # Usage:
 #   ./11_simulate_pgbouncer_session_pool_pinning.sh [pool_size] [hold_seconds] [--yes]
 #
-# Defaults: pool_size=20, hold_seconds=2400 (extreme — see actions/
-# connection-exhaustion.jsonc PB-ps-1/PB-ps-2: maxwait>=30s warning /
-# >=120s critical for a client queued behind a pinned session-mode pool.
-# 2400s holds the pool pinned 20x past the critical threshold and gives ~8
-# ticks of overlap with the hunter's 300s poll interval, vs. the previous
-# 180s default which barely cleared the 120s critical mark at all.
+# Defaults: pool_size=20, hold_seconds=8 — capped for fast local drilling
+# (total run stays under ~20s, including the probe's own timeout below).
+# This is well under actions/connection-exhaustion.jsonc PB-ps-1/PB-ps-2's
+# maxwait>=30s warning / >=120s critical thresholds and the hunter's 300s
+# poll interval, so hunter-detection reliability is NOT guaranteed at the
+# default; pass a larger hold_seconds explicitly (e.g. 2400, ~8 poll ticks
+# of overlap) if you need PB-ps-1/PB-ps-2 to be reliably observed.
 #
 # IMPORTANT: pool_size here should match (or exceed) the TARGET's actual
 # configured default_pool_size for pool_mode=session — pinning fewer
@@ -49,7 +50,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
 POOL_SIZE="${ARGS[0]:-20}"
-HOLD_SECONDS="${ARGS[1]:-2400}"
+HOLD_SECONDS="${ARGS[1]:-8}"
 
 echo "=== DRILL: PgBouncer Session-Mode Pool Pinning Simulator ==="
 echo "Target (via PgBouncer): ${PGBOUNCER_HOST}:${PGBOUNCER_PORT}/${PGDATABASE}"
@@ -77,7 +78,7 @@ sleep 1
 echo ""
 echo "--- Probing one extra client connection (expected to wait/queue in PgBouncer) ---"
 start_ts=$(date +%s)
-if timeout 10 psql -h "${PGBOUNCER_HOST}" -p "${PGBOUNCER_PORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
+if timeout 6 psql -h "${PGBOUNCER_HOST}" -p "${PGBOUNCER_PORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name='drill_session_pinning_probe'; SELECT 1;" >/tmp/drill_probe.log 2>&1; then
     elapsed=$(( $(date +%s) - start_ts ))
     echo "Probe connection succeeded after ${elapsed}s (pool had headroom, or pool_mode isn't 'session' — check config)."

@@ -5,8 +5,8 @@
 # SysCloud DAL Team
 #
 # ⚠️  NON-PRODUCTION USE ONLY. Requires 01_setup_slow_query_tables.sql first.
-# MUTATES DATA: bulk-inserts 10M rows without ANALYZE (extreme — 50x the
-# original baseline). Drill-database only.
+# MUTATES DATA: bulk-inserts 150k rows without ANALYZE. Drill-database only.
+# Sized for a <=20s drill run, not to maximize the hunter's detection window.
 #
 # A large data change (bulk insert of a value the planner has never seen at
 # this frequency) leaves pg_stat_user_tables.n_mod_since_analyze high while
@@ -28,7 +28,7 @@ PSQL=(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}")
 
 echo "=== DRILL: Stale Statistics Causing a Bad Plan ==="
 
-confirm_drill "This bulk-inserts 10,000,000 rows into slowq_orders WITHOUT running ANALYZE, to make the planner's row estimates stale — mutates drill data." "$@"
+confirm_drill "This bulk-inserts 150,000 rows into slowq_orders WITHOUT running ANALYZE, to make the planner's row estimates stale — mutates drill data." "$@"
 
 echo ""
 echo "--- pg_stat_user_tables before insert ---"
@@ -49,10 +49,10 @@ echo "    this table — do not run this drill back-to-back with 02's seq_scan b
 "${PSQL[@]}" -c "SELECT pg_stat_reset_single_table_counters('slowq_orders'::regclass);"
 
 echo ""
-echo "--- Bulk inserting 10,000,000 customer_id=1 / status='failed' rows (no ANALYZE) ---"
+echo "--- Bulk inserting 150,000 customer_id=1 / status='failed' rows (no ANALYZE) ---"
 "${PSQL[@]}" -c "INSERT INTO slowq_orders (customer_id, status, amount, created_at)
                   SELECT 1, 'failed', 100, now()
-                  FROM generate_series(1, 10000000);"
+                  FROM generate_series(1, 150000);"
 
 echo ""
 echo "--- pg_stat_user_tables after insert (note n_mod_since_analyze) ---"
@@ -70,6 +70,6 @@ echo "--- EXPLAIN with stale statistics (compare 'rows=' estimate vs actual) ---
 run_explain
 
 echo ""
-ensure_min_duration 2400
+ensure_min_duration 10
 echo "Drill complete. Stale statistics (autovacuum disabled, last_analyze/last_autoanalyze"
 echo "left null) are left in place on slowq_orders for the hunter to detect."
