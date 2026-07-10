@@ -17,16 +17,16 @@
 # Usage:
 #   ./09_simulate_role_limit_breach.sh [connection_limit] [attempt_count] [--yes]
 #
-# Defaults: connection_limit=8, attempt_count=15 — capped for fast local
-# drilling (total run stays under ~20s, including the per-attempt check
-# delay below and the final hold). Filling the limit to exactly 8/8
-# successful connections is 100% of it, comfortably past both actions/
-# connection-exhaustion.jsonc RL-1/RL-2 thresholds (role_limit_warning
-# pct_of_limit>=0.75, role_limit_critical>=0.90), while the remaining ~7
-# attempts demonstrate the real "too many connections for role" failure.
-# Each successful connection holds pg_sleep(8) — well under the hunter's
-# 300s poll interval, so hunter-detection reliability is NOT guaranteed at
-# the default; pass larger connection_limit/attempt_count (and bump the
+# Defaults: connection_limit=8, attempt_count=15 — sized for a ~1 minute
+# local drill window (including the per-attempt check delay below and the
+# final hold). Filling the limit to exactly 8/8 successful connections is
+# 100% of it, comfortably past both actions/connection-exhaustion.jsonc
+# RL-1/RL-2 thresholds (role_limit_warning pct_of_limit>=0.75,
+# role_limit_critical>=0.90), while the remaining ~7 attempts demonstrate
+# the real "too many connections for role" failure. Each successful
+# connection holds pg_sleep(60) — still well under the hunter's 300s poll
+# interval, so hunter-detection reliability is NOT guaranteed at the
+# default; pass larger connection_limit/attempt_count (and bump the
 # hardcoded pg_sleep below) if you need multi-tick poll coverage.
 #
 # Example: limit drill_role to 3 connections, then attempt 6
@@ -59,7 +59,7 @@ success=0
 failed=0
 for i in $(seq 1 "${ATTEMPTS}"); do
     if PGPASSWORD="${DRILL_ROLE_PASSWORD}" psql -h "${PGHOST}" -p "${PGPORT}" -U "${DRILL_ROLE}" -d "${PGDATABASE}" \
-         -c "SET application_name='drill_role_limit'; SELECT pg_sleep(8);" >/tmp/drill_attempt_${i}.log 2>&1 &
+         -c "SET application_name='drill_role_limit'; SELECT pg_sleep(60);" >/tmp/drill_attempt_${i}.log 2>&1 &
     then
         pid=$!
         sleep 0.1
@@ -77,13 +77,13 @@ echo ""
 echo "Successful: ${success} | Failed (expected once limit exceeded): ${failed}"
 echo ""
 echo "--- Leaving CONNECTION LIMIT ${CONN_LIMIT} in place while the ${success} open"
-echo "    session(s) hold pg_sleep(8) — restoring it now would drop rolconnlimit"
+echo "    session(s) hold pg_sleep(60) — restoring it now would drop rolconnlimit"
 echo "    back to -1 immediately, which excludes this role from connection-roles.sql"
 echo "    (WHERE rolconnlimit NOT IN (0,-1)) and makes RL-1/RL-2 unobservable for"
-echo "    the rest of the hold. The role is restricted for real for the ~8s"
+echo "    the rest of the hold. The role is restricted for real for the ~60s"
 echo "    below — that's the point, not a side effect."
 echo ""
-echo "Waiting for drill connections to finish (max 8s)..."
+echo "Waiting for drill connections to finish (max 60s)..."
 wait
 
 echo ""

@@ -12,10 +12,9 @@
 # extreme-by-default sizing and a pass/fail summary.
 #
 # No mitigation/cleanup step, no confirmation gate: drills fire immediately
-# and drill sessions are left running/expiring on their own so the hunters
-# have a real window to detect them. Both --fast and --full hold for 8s,
-# matching each drill script's own fast-drilling default — capped so a full
-# run_all.sh pass finishes in well under 20s per drill. actions/
+# and drill sessions are left running/expiring on their own so they can be
+# observed for a while afterward. Both --fast and --full hold for 60s,
+# matching each drill script's own ~1-minute-drilling default. actions/
 # connection-exhaustion.jsonc polls every 300s, so hunter-detection
 # reliability is NOT guaranteed at this hold length in either mode; edit
 # N06_HOLD/N07_HOLD/N10_HOLD/N11_HOLD (and N09's pg_sleep) below to e.g. 2400
@@ -29,7 +28,7 @@
 #   ./run_all.sh [--fast|--full] [--only 06,07] [--skip 09,11]
 #                [--with-baseline] [--list] [--yes]
 #
-#   --fast          Small scale (default) — full manifest finishes in ~20s.
+#   --fast          Small scale (default) — full manifest finishes in ~1 min.
 #   --full          Doc-example scale (matches README quick-start numbers) —
 #                    larger connection/attempt counts, same short hold.
 #   --only 06,07    Only run these drill/detection ids (comma list).
@@ -82,17 +81,17 @@ done
 RUNNER_LOG_DIR="${RUNNER_LOG_DIR:-./run_all_logs/$(date +%Y%m%d_%H%M%S 2>/dev/null || echo run)}"
 
 if [[ "${FAST}" -eq 1 ]]; then
-    N06_SESS=100; N06_HOLD=8
-    N07_CONN=200; N07_HOLD=8
+    N06_SESS=100; N06_HOLD=60
+    N07_CONN=200; N07_HOLD=60
     N09_LIM=8;    N09_ATT=15
-    N10_CONN=200; N10_HOLD=8
-    N11_POOL=10;  N11_HOLD=8
+    N10_CONN=200; N10_HOLD=60
+    N11_POOL=10;  N11_HOLD=60
 else
-    N06_SESS=200; N06_HOLD=8
-    N07_CONN=500; N07_HOLD=8
+    N06_SESS=200; N06_HOLD=60
+    N07_CONN=500; N07_HOLD=60
     N09_LIM=12;   N09_ATT=20
-    N10_CONN=500; N10_HOLD=8
-    N11_POOL=20;  N11_HOLD=8
+    N10_CONN=500; N10_HOLD=60
+    N11_POOL=20;  N11_HOLD=60
 fi
 
 echo "=== Connection Exhaustion — run_all.sh (${MODE_LABEL}) ==="

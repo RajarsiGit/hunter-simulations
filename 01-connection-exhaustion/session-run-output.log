@@ -1,0 +1,168 @@
+rajarsi@syscloud-1J93:/mnt/c/SysCloud/Tools/dba-issues/hunter-simulations/01-connection-exhaustion$ DRILL_YES=1 ./run_all.sh
+=== Connection Exhaustion — run_all.sh (fast) ===
+Target: postgres@dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com:5432/Drill_DB
+
+▶ [06] Idle-in-transaction blocker — launching in parallel: ./06_simulate_idle_in_transaction.sh 100 60 
+▶ [07] PgBouncer transaction-pool saturation — launching in parallel: ./07_simulate_pool_saturation.sh 200 60
+▶ [09] Role connection-limit breach — launching in parallel: ./09_simulate_role_limit_breach.sh 8 15
+▶ [10] Idle connection storm / leak — launching in parallel: ./10_simulate_idle_connection_storm.sh 200 60
+▶ [11] PgBouncer session-pool pinning — launching in parallel: ./11_simulate_pgbouncer_session_pool_pinning.sh 10 60
+
+--- Waiting for 5 parallel drill(s) to finish ---
+✔ [06] Idle-in-transaction blocker (ok, parallel batch 1025s)
+✔ [07] PgBouncer transaction-pool saturation (ok, parallel batch 1025s)
+✔ [09] Role connection-limit breach (ok, parallel batch 1025s)
+✔ [10] Idle connection storm / leak (ok, parallel batch 1141s)
+✔ [11] PgBouncer session-pool pinning (ok, parallel batch 1141s)
+
+───────────────────────────────────────────────────────────────────
+▶ [03] PgBouncer pool health check
+  ./03_pgbouncer_health_check.sh
+───────────────────────────────────────────────────────────────────
+=== PgBouncer Health Check :: 10.70.1.158:5432 :: 2026-07-10T12:04:28Z ===
+
+--- SHOW POOLS ---
+database,user,cl_active,cl_waiting,sv_active,sv_idle,sv_used,sv_tested,sv_login,maxwait,maxwait_us,pool_mode
+DBAUtil,postgres,1,0,0,0,1,0,0,0,0,0,0,0,0,transaction
+pgbouncer,pgbouncer,1,0,0,0,0,0,0,0,0,0,0,0,0,statement
+
+--- Evaluation ---
+Highest maxwait observed: 0s 
+STATUS: OK — maxwait below warning threshold.
+✔ [03] PgBouncer pool health check (ok, 1s)
+
+───────────────────────────────────────────────────────────────────
+▶ [04] RDS connection saturation monitor
+  ./04_rds_connection_monitor.sh
+───────────────────────────────────────────────────────────────────
+=== RDS Connection Monitor :: dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com:5432/Drill_DB :: 2026-07-10T12:04:29Z ===
+Used: 14 / 250 (5%)
+Idle-in-transaction (>5min): 0
+Top idle-connection source (app:client_addr,count): DBeaver 26.1.2 - Metadata <postgres>:10.85.4.42,1
+
+STATUS: OK.
+✔ [04] RDS connection saturation monitor (ok, 5s)
+
+───────────────────────────────────────────────────────────────────
+▶ [01] Diagnostic sweep (after drills)
+  psql -h dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com -p 5432 -U postgres -d Drill_DB -f 01_diagnostic_queries.sql
+───────────────────────────────────────────────────────────────────
+=========================================================================
+1. ACTIVE & BLOCKED SESSIONS
+=========================================================================
+  pid  | usename  | application_name | state  | wait_event_type | wait_event | query_age |    state_age     |                               query_snippet                                
+-------+----------+------------------+--------+-----------------+------------+-----------+------------------+----------------------------------------------------------------------------
+ 18575 | postgres | psql             | active |                 |            | 00:00:00  | -00:00:00.000002 | SELECT pid, usename, application_name, state, wait_event_type, wait_event,+
+       |          |                  |        |                 |            |           |                  |        now() - query_star
+(1 row)
+
+
+=========================================================================
+2. BLOCKING TREE (who is blocking whom)
+=========================================================================
+ blocked_pid | blocked_user | blocked_query | blocker_pid | blocker_state | blocker_query | blocker_wait_event 
+-------------+--------------+---------------+-------------+---------------+---------------+--------------------
+(0 rows)
+
+
+=========================================================================
+3. LONG IDLE-IN-TRANSACTION SESSIONS (> 5 min)
+=========================================================================
+ pid | usename | application_name | state | idle_in_txn_duration | last_query 
+-----+---------+------------------+-------+----------------------+------------
+(0 rows)
+
+
+=========================================================================
+4. CONNECTION USAGE BY DATABASE AND USER
+=========================================================================
+        datname        |    usename    | state | connection_count 
+-----------------------+---------------+-------+------------------
+                       |               |       |                4
+ postgres              | postgres      | idle  |                3
+ rdsadmin              | rdsadmin      | idle  |                2
+ DBAUtil               | postgres      | idle  |                1
+                       | rdsadmin      |       |                1
+ postgres              | rdsadmin      |       |                1
+ DBAUtil               | rds_superuser |       |                1
+ SCSGBackupTrans_18365 |               |       |                1
+(8 rows)
+
+
+=========================================================================
+5. MAX_CONNECTIONS VS CURRENT USAGE
+=========================================================================
+ used | max_connections | pct_used 
+------+-----------------+----------
+   14 |             250 |      5.6
+(1 row)
+
+
+=========================================================================
+6. ROLE CONNECTION LIMITS (non-default)
+=========================================================================
+ rolname | rolconnlimit 
+---------+--------------
+(0 rows)
+
+
+=========================================================================
+7. DATABASE CONNECTION LIMITS (non-default)
+=========================================================================
+ datname | datconnlimit 
+---------+--------------
+(0 rows)
+
+
+=========================================================================
+8. QUERY AGE DISTRIBUTION (triage overview)
+=========================================================================
+ state | age_bucket | sessions 
+-------+------------+----------
+ idle  | > 1 hour   |        2
+ idle  | < 1 min    |        3
+ idle  | 5-60 min   |        1
+       | > 1 hour   |        8
+(4 rows)
+
+
+=========================================================================
+9. CONNECTIONS BY CLIENT ADDRESS (spot deploy/scale-out storms)
+=========================================================================
+ client_addr |               application_name               | state | connections |       oldest_connection       
+-------------+----------------------------------------------+-------+-------------+-------------------------------
+             |                                              |       |           6 | 2026-07-09 19:28:33.156736+00
+ 10.85.4.42  | DBeaver 26.1.2 - Metadata <postgres>         | idle  |           1 | 2026-07-10 05:02:11.088321+00
+ 10.85.4.42  | DBeaver 26.1.2 - Main <postgres>             | idle  |           1 | 2026-07-10 05:02:08.996531+00
+ 10.85.4.42  | DBeaver 26.1.2 - SQLEditor <Script-3562.sql> | idle  |           1 | 2026-07-10 05:02:13.32224+00
+ 10.70.1.158 | app - 10.85.4.42:50907                       | idle  |           1 | 2026-07-10 12:02:56.239054+00
+             | PostgreSQL JDBC Driver                       | idle  |           1 | 2026-07-09 19:28:44.378133+00
+             |                                              | idle  |           1 | 2026-07-09 19:29:51.21738+00
+             | pg_cron scheduler                            |       |           1 | 2026-07-09 19:28:33.178428+00
+(8 rows)
+
+
+=========================================================================
+Diagnostic suite complete.
+=========================================================================
+✔ [01] Diagnostic sweep (after drills) (ok, 3s)
+
+No cleanup step: drill sessions are left to expire on their own so hunters
+have a real window to detect them.
+
+======================================================================
+ SUMMARY
+======================================================================
+  ✔ [06] Idle-in-transaction blocker                            1025s
+  ✔ [07] PgBouncer transaction-pool saturation                  1025s
+  ✔ [09] Role connection-limit breach                           1025s
+  ✔ [10] Idle connection storm / leak                           1141s
+  ✔ [11] PgBouncer session-pool pinning                         1141s
+  ✔ [03] PgBouncer pool health check                               1s
+  ✔ [04] RDS connection saturation monitor                         5s
+  ✔ [01] Diagnostic sweep (after drills)                           3s
+----------------------------------------------------------------------
+  8 step(s) run, 0 non-zero exit(s)
+  Logs: ./run_all_logs/20260710_114527
+======================================================================
+rajarsi@syscloud-1J93:/mnt/c/SysCloud/Tools/dba-issues/hunter-simulations/01-connection-exhaustion$ 

@@ -13,13 +13,13 @@
 # Usage:
 #   ./07_simulate_pool_saturation.sh [num_connections] [hold_seconds] [--yes]
 #
-# Defaults: num_connections=500, hold_seconds=8 — capped for fast local
-# drilling (total run stays under ~20s). What this saturates is PgBouncer's
-# per-pool default_pool_size (server-side slots), NOT max_client_conn: once
+# Defaults: num_connections=500, hold_seconds=60 — sized for a ~1 minute
+# local drill window. What this saturates is PgBouncer's per-pool
+# default_pool_size (server-side slots), NOT max_client_conn: once
 # num_connections exceeds default_pool_size, every excess client queues,
 # driving PB-ps-1 (maxwait>=30s OR cl_waiting>=20) and PB-ps-2
 # (maxwait>=120s CRITICAL) in connection-summary's pgbouncer_saturation
-# source. An 8s hold is well under the hunter's 300s poll interval, so
+# source. A 60s hold is still well under the hunter's 300s poll interval, so
 # hunter-detection reliability is NOT guaranteed at the default; pass a
 # larger hold_seconds explicitly (e.g. 2400, ~8 poll ticks of overlap) if you
 # need PB-ps-1/PB-ps-2 to be reliably observed. NOTE: PB-cc-1/PB-cc-2
@@ -41,7 +41,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
 NUM_CONNECTIONS="${ARGS[0]:-500}"
-HOLD_SECONDS="${ARGS[1]:-8}"
+HOLD_SECONDS="${ARGS[1]:-60}"
 MAX_PARALLEL="${MAX_PARALLEL:-150}"   # batch size to avoid overwhelming the local shell
 
 echo "=== DRILL: PgBouncer Pool Saturation Simulator ==="

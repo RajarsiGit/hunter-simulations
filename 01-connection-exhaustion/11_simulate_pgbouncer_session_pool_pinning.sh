@@ -24,13 +24,14 @@
 # Usage:
 #   ./11_simulate_pgbouncer_session_pool_pinning.sh [pool_size] [hold_seconds] [--yes]
 #
-# Defaults: pool_size=20, hold_seconds=8 — capped for fast local drilling
-# (total run stays under ~20s, including the probe's own timeout below).
-# This is well under actions/connection-exhaustion.jsonc PB-ps-1/PB-ps-2's
-# maxwait>=30s warning / >=120s critical thresholds and the hunter's 300s
-# poll interval, so hunter-detection reliability is NOT guaranteed at the
-# default; pass a larger hold_seconds explicitly (e.g. 2400, ~8 poll ticks
-# of overlap) if you need PB-ps-1/PB-ps-2 to be reliably observed.
+# Defaults: pool_size=20, hold_seconds=60 — sized for a ~1 minute local
+# drill window (the probe below still times out after 6s, well inside that
+# window). This is still under actions/connection-exhaustion.jsonc
+# PB-ps-1/PB-ps-2's maxwait>=30s warning / >=120s critical thresholds and
+# the hunter's 300s poll interval, so hunter-detection reliability is NOT
+# guaranteed at the default; pass a larger hold_seconds explicitly (e.g.
+# 2400, ~8 poll ticks of overlap) if you need PB-ps-1/PB-ps-2 to be
+# reliably observed.
 #
 # IMPORTANT: pool_size here should match (or exceed) the TARGET's actual
 # configured default_pool_size for pool_mode=session — pinning fewer
@@ -50,7 +51,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
 mapfile -t ARGS < <(strip_flags "$@")
 POOL_SIZE="${ARGS[0]:-20}"
-HOLD_SECONDS="${ARGS[1]:-8}"
+HOLD_SECONDS="${ARGS[1]:-60}"
 
 echo "=== DRILL: PgBouncer Session-Mode Pool Pinning Simulator ==="
 echo "Target (via PgBouncer): ${PGBOUNCER_HOST}:${PGBOUNCER_PORT}/${PGDATABASE}"

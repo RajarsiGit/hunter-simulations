@@ -30,13 +30,13 @@ chmod +x *.sh  # already executable in this checkout, but harmless to re-run
 No mitigation (session termination/throttling) or cleanup scripts are
 included in this folder, and no drill blocks on a confirmation prompt —
 every drill fires immediately, only demonstrates the problem, and leaves it
-in place (sessions self-expire on their own after their hold duration — 8s
-by default in every script and in both `run_all.sh --fast`/`--full`, capped
-for fast local drilling). That default is well under the connection-
-exhaustion hunter's 300s poll interval, so hunter-detection reliability is
-NOT guaranteed out of the box — pass a larger `hold_seconds` explicitly
-(e.g. 2400, ~8 poll ticks of overlap) if you need a hunter to reliably catch
-it mid-drill.
+in place (sessions self-expire on their own after their hold duration — 60s
+by default in every script and in both `run_all.sh --fast`/`--full`, sized
+for a ~1 minute local drill window). That default is still well under the
+connection-exhaustion hunter's 300s poll interval, so hunter-detection
+reliability is NOT guaranteed out of the box — pass a larger `hold_seconds`
+explicitly (e.g. 2400, ~8 poll ticks of overlap) if you need a hunter to
+reliably catch it mid-drill.
 
 ## Automated full run
 
@@ -55,7 +55,7 @@ DRILL_YES=1 ./run_all.sh
 # Skip the two drills that need extra pre-existing config (DRILL_ROLE / PgBouncer session mode)
 ./run_all.sh --skip 09,11 --yes
 
-# Doc-example scale (larger connection/attempt counts, same short 8s hold)
+# Doc-example scale (larger connection/attempt counts, same ~60s hold)
 ./run_all.sh --full --yes
 ```
 
@@ -63,7 +63,7 @@ DRILL_YES=1 ./run_all.sh
 
 ```bash
 # Drill: idle-in-transaction blocker (agent/non-interactive)
-DRILL_YES=1 ./06_simulate_idle_in_transaction.sh 200 8 my_test_table
+DRILL_YES=1 ./06_simulate_idle_in_transaction.sh 200 60 my_test_table
 
 # Detect
 psql -f 01_diagnostic_queries.sql
@@ -71,7 +71,7 @@ psql -f 01_diagnostic_queries.sql
 # ─────────────────────────────────────────────
 
 # Drill: PgBouncer transaction-pool saturation
-./07_simulate_pool_saturation.sh 500 8 --yes
+./07_simulate_pool_saturation.sh 500 60 --yes
 psql -h "$PGBOUNCER_HOST" -p "$PGBOUNCER_PORT" -U "$PGBOUNCER_ADMIN_USER" pgbouncer -c "SHOW POOLS;"
 ./03_pgbouncer_health_check.sh
 
@@ -83,14 +83,14 @@ psql -h "$PGBOUNCER_HOST" -p "$PGBOUNCER_PORT" -U "$PGBOUNCER_ADMIN_USER" pgboun
 # ─────────────────────────────────────────────
 
 # Drill: plain idle connection storm / leak signature
-./10_simulate_idle_connection_storm.sh 500 8 --yes
+./10_simulate_idle_connection_storm.sh 500 60 --yes
 psql -c "SELECT state, count(*) FROM pg_stat_activity WHERE application_name='drill_idle_conn_storm' GROUP BY state;"
 
 # ─────────────────────────────────────────────
 
 # Drill: PgBouncer session-mode pool pinning (needs pool_mode=session already set;
 # override arg 1 with the target's real default_pool_size if it isn't 20)
-./11_simulate_pgbouncer_session_pool_pinning.sh 20 8 --yes
+./11_simulate_pgbouncer_session_pool_pinning.sh 20 60 --yes
 ```
 
 ## Notes
@@ -98,4 +98,4 @@ psql -c "SELECT state, count(*) FROM pg_stat_activity WHERE application_name='dr
 - `01`/`04`/`06`/`09`/`10` connect **directly to RDS** (port 5432) so `pg_stat_activity` reflects true backend state.
 - `03`/`07`/`11` connect to **PgBouncer** — `03`/`11`'s admin checks use the `pgbouncer` virtual database (`SHOW`/`PAUSE`/`KILL`/`RESUME` only, no normal SQL); `07`/`11`'s drill traffic uses `PGBOUNCER_HOST`/`PGBOUNCER_PORT` with a normal app user.
 - `11` cannot reproduce pinning unless the target PgBouncer database is already configured `pool_mode = session` — that's a `pgbouncer.ini` change, not something a script sets (see runbook parity note in the root `connection-exhaustion/` README).
-- Every `.sh` drill tags sessions with a unique `application_name` (`drill_idle_txn`, `drill_pool_saturation`, `drill_role_limit`, `drill_idle_conn_storm`, `drill_session_pinning`), fires with no confirmation gate, and self-expires after its hold duration (8s by default via `run_all.sh --fast`/`--full` and in every script's own standalone default, capped for fast local drilling — well under the connection-exhaustion hunter's 300s poll interval, so pass a larger `hold_seconds` explicitly if you need a hunter to reliably catch it) — there is no mitigation/cleanup script to end a drill early.
+- Every `.sh` drill tags sessions with a unique `application_name` (`drill_idle_txn`, `drill_pool_saturation`, `drill_role_limit`, `drill_idle_conn_storm`, `drill_session_pinning`), fires with no confirmation gate, and self-expires after its hold duration (60s by default via `run_all.sh --fast`/`--full` and in every script's own standalone default, sized for a ~1 minute local drill window — still well under the connection-exhaustion hunter's 300s poll interval, so pass a larger `hold_seconds` explicitly if you need a hunter to reliably catch it) — there is no mitigation/cleanup script to end a drill early.
