@@ -1,0 +1,113 @@
+{
+  "meta": {
+    "title": "Hunter Simulation Coverage Report",
+    "dek": "For each production monitoring hunter, how many of its drill simulations actually got caught by the live pipeline — and the specific, sourced reason behind every miss.",
+    "window": "2026-07-08 to 2026-07-13",
+    "target_instance": "dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com / Drill_DB",
+    "compiled": "2026-07-13",
+    "sources": {
+      "simulations": "C:\\SysCloud\\Tools\\dba-issues\\hunter-simulations\\",
+      "reports": "C:\\SysCloud\\Production\\AI-Hunters\\reports\\"
+    },
+    "artifact_url": "https://claude.ai/code/artifact/fbb18205-7e64-481a-9c1e-9d1c74a189d3",
+    "favicon": "🎯",
+    "methodology": "\"Achieved\" means the drill's failure signature was actually named as evidence in a production monitor tick report under C:\\SysCloud\\Production\\AI-Hunters\\reports\\ (or, for slow-queries script 07, in the full monitor log after its evidencing reports were rotated off disk). \"Not achieved\" covers four distinct situations, deliberately kept separate rather than collapsed into one verdict: a genuine detection-pipeline gap, an environment/data limitation in the dev instance, a check that is owned by a different hunter than the one the folder name suggests, and one confirmed script bug. Script and drill inventories are drawn from each topic's own README.md and run_all.sh manifest; execution outcomes are drawn from session-run-output.log and run_all_logs/.",
+    "how_to_update": "Edit this file (add/change a row's status/reason, or add a whole hunter), then ask Claude to regenerate scratchpad/hunter-simulation-coverage.html from it and republish via the Artifact tool with url=meta.artifact_url so the existing link stays live instead of minting a new one."
+  },
+  "totals": { "total": 35, "achieved": 17, "not_achieved": 18 },
+  "hunters": [
+    {
+      "id": "h-conn",
+      "order": 1,
+      "name": "Connection Exhaustion",
+      "total": 5,
+      "achieved": 5,
+      "not_achieved": 0,
+      "callout": "Clean sweep. The 2026-07-10 full-scale run produced two escalations — a Postgres-side connection_pool_critical at 10:49 UTC and a PgBouncer-side pgbouncer_pool_saturated_critical at 11:21 UTC — that between them evidence all five drills.",
+      "rows": [
+        { "script": "06", "name": "Idle-in-transaction blocker", "status": "achieved", "reason": "Named top consumer (drill_idle_txn, 85 sessions) in the 10:49 UTC critical finding." },
+        { "script": "07", "name": "PgBouncer transaction-pool saturation", "status": "achieved", "reason": "Drove the 11:21 UTC PgBouncer starvation escalation (cl_waiting=443, maxwait=95s) once Postgres headroom freed up." },
+        { "script": "09", "name": "Role connection-limit breach", "status": "achieved", "reason": "Detected, but folded into the aggregate pool-saturation finding rather than escalated as its own standalone issue." },
+        { "script": "10", "name": "Idle connection storm / leak", "status": "achieved", "reason": "Largest single contributor (drill_idle_conn_storm, 115 sessions) to the 10:49 UTC critical finding." },
+        { "script": "11", "name": "PgBouncer session-pool pinning", "status": "achieved", "reason": "Caught via the pool-starvation tick. Caveat: this drill can only reproduce pinning at all if the target PgBouncer database is already configured pool_mode=session — a prerequisite the script cannot set itself, but which happened to hold in dev." }
+      ],
+      "gaps": []
+    },
+    {
+      "id": "h-locks",
+      "order": 2,
+      "name": "Locks, Deadlocks & Blocking Queries",
+      "total": 15,
+      "achieved": 3,
+      "not_achieved": 12,
+      "callout": "Why the count looks low: run_all.sh fires all 15 drills concurrently against shared tables by design. In the one full-scale run with evidence (2026-07-09, 20:26 UTC), script 04's table-wide LOCK TABLE landed first and became the root of a 22-session blocking chain that absorbed most of the other drills' sessions as blocked bystanders — before their own distinct failure signature (a deadlock cycle, a genuine idle-in-txn state, a row-level lock) could register. This is a run-design artifact, not evidence that those checks are undetectable in isolation. The most recent fast-scale run (default ~6-8s holds, well under the hunter's 300s poll interval) shows 0 issues, independently confirming the README's own documented reliability caveat.",
+      "rows": [
+        { "script": "04", "name": "Table AccessExclusiveLock", "status": "achieved", "reason": "Root of the critical lock_blocking_critical escalation (22 blocked sessions, depth 4) and a ddl_blocking_detected finding." },
+        { "script": "06", "name": "Advisory lock", "status": "achieved", "reason": "Own dedicated advisory_lock_blocking warning fired both ticks; not re-escalated on repeat (dedupe window, by design)." },
+        { "script": "08", "name": "MVW refresh lock", "status": "achieved", "reason": "Own dedicated ddl_blocking_detected warning fired both ticks; dedupe-suppressed on repeat, same as above." },
+        { "script": "02", "name": "Row-lock blocking", "status": "not_achieved", "reason": "Preempted — sessions surface only as blocked bystanders inside script 04's chain, never as their own finding." },
+        { "script": "03", "name": "Classic deadlock", "status": "not_achieved", "reason": "Preempted before reaching its UPDATE/UPDATE cycle; deadlock_spike never fired in either report." },
+        { "script": "05", "name": "DDL blocks DML cascade", "status": "not_achieved", "reason": "Same concurrency preemption — sessions appear only inside script 04's blocked list." },
+        { "script": "07", "name": "Credits multi-module deadlock", "status": "not_achieved", "reason": "Zero occurrences in either report — fully absorbed by the concurrent storm before producing any signature." },
+        { "script": "11", "name": "Idle-in-transaction (indefinite)", "status": "not_achieved", "reason": "Report's own idle-in-txn counter read zero both ticks — sessions were lock-waiting (state=active) on script 04, never genuinely idle-in-txn." },
+        { "script": "12", "name": "Long txn blocks vacuum", "status": "not_achieved", "reason": "By design — bloat detection lives in the autovacuum-bloat-replication-temp-files hunter, not this one (documented in the script header)." },
+        { "script": "13", "name": "FK contention", "status": "not_achieved", "reason": "Genuine gap — the FK-1 fk_contention_detected check exists and this drill is documented to feed it, but it never fired." },
+        { "script": "14", "name": "VACUUM FULL blocking", "status": "not_achieved", "reason": "Insufficient data volume in dev — lock_test_accounts is only 5 rows, so VACUUM FULL finishes in milliseconds, far too fast for a 300s poll to ever sample it (documented in the script header)." },
+        { "script": "15", "name": "Non-concurrent CREATE INDEX blocks DML", "status": "not_achieved", "reason": "Same insufficient-data-volume gap as script 14 — CREATE INDEX on the 5-row table completes in milliseconds." },
+        { "script": "16", "name": "Connection exhaustion (in-folder demo)", "status": "not_achieved", "reason": "By design — owned by the connection-exhaustion hunter (topic 1), explicitly \"not gated by any check in this hunter.\"" },
+        { "script": "17", "name": "Stuck-worker workflow blockage", "status": "not_achieved", "reason": "Zero occurrences in either report — inferred preemption by script 04's table lock." },
+        { "script": "18", "name": "Lock queue amplification", "status": "not_achieved", "reason": "Preempted — its own DDL needed the same AccessExclusiveLock script 04 already held, so its A→B→12-waiter chain merged into script 04's instead of forming its own root." }
+      ],
+      "gaps": []
+    },
+    {
+      "id": "h-slow",
+      "order": 3,
+      "name": "Slow Queries",
+      "total": 6,
+      "achieved": 5,
+      "not_achieved": 1,
+      "callout": "",
+      "rows": [
+        { "script": "02", "name": "Missing index scan", "status": "achieved", "reason": "Fired as query_slow in two separate ticks. First occurrence hit a Claude dispatch failure — a pipeline gap, not a reproduction failure." },
+        { "script": "03", "name": "Function-wrapped predicate", "status": "achieved", "reason": "Fired as query_slow (46.5s), resolved deterministically." },
+        { "script": "04", "name": "Offset pagination", "status": "achieved", "reason": "Fired as query_slow (146.1s deep-offset query)." },
+        { "script": "05", "name": "JSON processing spike", "status": "achieved", "reason": "Two sessions caught; one escalation correctly identified the embedded pg_sleep(2400) as synthetic." },
+        { "script": "06", "name": "Stale statistics", "status": "not_achieved", "reason": "Confirmed pipeline gap — the check's own SQL fetches the exact qualifying row (never analyzed, autovacuum off), but no stats_never_analyzed/stats_stale issue was ever raised in the full monitor log. Likely dropped because the same table already produced an autovacuum_disabled issue at the same priority in the same tick." },
+        { "script": "07", "name": "Retry storm", "status": "achieved", "reason": "Fired as query_slow three times per the full monitor log — the evidencing report files were since rotated off disk (only the newest two + latest are retained), so it isn't visible in the currently-kept reports." }
+      ],
+      "gaps": [
+        { "name": "CREATE STATISTICS for correlated columns", "reason": "Mentioned in script 06's output but not auto-applied by any drill." },
+        { "name": "Bad join plan & generic prepared-plan problem", "reason": "Covered narratively in the source runbook but not scripted — they need multi-table join setup / PREPARE session state beyond this folder's shared tables." },
+        { "name": "pg_trgm/GIN index for substring LIKE matches", "reason": "Mentioned in script 05's output but not scripted." }
+      ]
+    },
+    {
+      "id": "h-bloat",
+      "order": 4,
+      "name": "Autovacuum / Bloat / Replication / Temp Files",
+      "total": 9,
+      "achieved": 4,
+      "not_achieved": 5,
+      "callout": "Half of this topic's own checks (table/index bloat, autovacuum-disabled, stale statistics) are actually owned by the slow-queries hunter, not this one — this hunter only owns temp-file-spill and config-hygiene checks. Several \"not achieved\" rows below are misses against that other hunter, not this one.",
+      "rows": [
+        { "script": "07-sort", "name": "Temp-file spill: sort", "status": "achieved", "reason": "Named directly in the temp_spill_warning evidence (11 GB spilled on one call)." },
+        { "script": "07-group", "name": "Temp-file spill: hash aggregate", "status": "achieved", "reason": "Named directly in the same temp_spill_warning evidence (850 MB spilled)." },
+        { "script": "07-hash", "name": "Temp-file spill: hash join", "status": "achieved", "reason": "Contributed to the aggregate database-level temp_spill_warning (5941 MB/hour) but wasn't individually itemized in the top-5 evidence list." },
+        { "script": "08", "name": "CREATE INDEX temp spike", "status": "achieved", "reason": "Its own index build named directly in evidence (7798 MB spilled across 2 calls)." },
+        { "script": "03", "name": "Table bloat from UPDATE/DELETE churn", "status": "not_achieved", "reason": "Script bug: the PL/pgSQL churn loop fails immediately with ERROR: invalid transaction termination, reproduced identically across two separate runs. Even the residual bloat left over from earlier successful runs (100% dead-tuple ratio) never triggered a finding — that check lives in the slow-queries hunter and never fired there either." },
+        { "script": "04", "name": "Index bloat", "status": "not_achieved", "reason": "Same PL/pgSQL script bug as script 03 — identical invalid transaction termination error, churn loop never completes." },
+        { "script": "05", "name": "Autovacuum worker starvation", "status": "not_achieved", "reason": "Ran successfully, but produced no matching finding in the slow-queries hunter (which owns this check) — a manual VACUUM here can only be caught if large enough to trip query_slow/query_critical instead, which it wasn't at this scale." },
+        { "script": "06", "name": "Stale statistics → bad plan", "status": "not_achieved", "reason": "Shares its table with script 03's churn; after that churn, live-tuple count drops to 0 (everything becomes a dead tuple), which fails the stale-stats check's own n_live_tup > 100000 threshold outright — compounded by the same stats-detection pipeline gap found under slow-queries script 06." },
+        { "script": "09", "name": "Inactive replication slot retains WAL", "status": "not_achieved", "reason": "Environment config gap — the drill fails outright with ERROR: replication slots can only be used if \"max_replication_slots\" > 0; this parameter is 0 on the dev instance." },
+        { "script": "10", "name": "Write surge → replica lag", "status": "not_achieved", "reason": "Structurally cannot fire without a real attached RDS read replica — REPLICA_PGHOST wasn't set for this run, so only the primary-side write surge ran; the replica-side lag check cannot fire without one, at any row count." }
+      ],
+      "gaps": [
+        { "name": "Temp-file concurrency storm (QC-1)", "reason": "No script targets it — scripts 07/08 each run one query per invocation, not a fan-out of 20+ concurrent identical ones." },
+        { "name": "Config-hygiene checks (CH-1..CH-5)", "reason": "log_temp_files, temp_file_limit, pg_stat_statements presence, activity-snapshot mechanism, role-level overrides — static RDS-parameter-group/extension checks, not something a load-generating drill can toggle." },
+        { "name": "Transaction ID wraparound", "reason": "Forcing genuine wraparound needs billions of real transactions; there's no safe way to drill the failure itself, only detect its risk." },
+        { "name": "DMS/CDC consumer lag", "reason": "Script 09 reproduces the WAL-retention signal an inactive slot produces, but a real broken DMS task requires an actual DMS replication instance — out of scope for a single script." }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,487 @@
+<title>Hunter Simulation Coverage Report</title>
+<style>
+:root{
+  --bg:#f3efe8;
+  --surface:#fffdf9;
+  --surface-2:#ece5da;
+  --border:#ddd3c3;
+  --ink:#2a241c;
+  --ink-dim:#6b6152;
+  --accent:#b5762c;
+  --accent-ink:#fff8ee;
+  --good:#3f7a4f;
+  --good-bg:#e2ede2;
+  --good-border:#b9d3bd;
+  --bad:#a6412f;
+  --bad-bg:#f6e6e0;
+  --bad-border:#e2b8ab;
+  --warn:#93690f;
+  --warn-bg:#f3ead1;
+  --warn-border:#ddc688;
+  --mono:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#181410;
+    --surface:#211c17;
+    --surface-2:#292219;
+    --border:#3c3327;
+    --ink:#ede4d6;
+    --ink-dim:#a99a84;
+    --accent:#e0a248;
+    --accent-ink:#241a08;
+    --good:#7fbf8e;
+    --good-bg:#1c2b1f;
+    --good-border:#345c3d;
+    --bad:#e08972;
+    --bad-bg:#2e1c17;
+    --bad-border:#5c3327;
+    --warn:#e0c26a;
+    --warn-bg:#2e2712;
+    --warn-border:#5c4d22;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#181410;--surface:#211c17;--surface-2:#292219;--border:#3c3327;
+  --ink:#ede4d6;--ink-dim:#a99a84;--accent:#e0a248;--accent-ink:#241a08;
+  --good:#7fbf8e;--good-bg:#1c2b1f;--good-border:#345c3d;
+  --bad:#e08972;--bad-bg:#2e1c17;--bad-border:#5c3327;
+  --warn:#e0c26a;--warn-bg:#2e2712;--warn-border:#5c4d22;
+}
+:root[data-theme="light"]{
+  --bg:#f3efe8;--surface:#fffdf9;--surface-2:#ece5da;--border:#ddd3c3;
+  --ink:#2a241c;--ink-dim:#6b6152;--accent:#b5762c;--accent-ink:#fff8ee;
+  --good:#3f7a4f;--good-bg:#e2ede2;--good-border:#b9d3bd;
+  --bad:#a6412f;--bad-bg:#f6e6e0;--bad-border:#e2b8ab;
+  --warn:#93690f;--warn-bg:#f3ead1;--warn-border:#ddc688;
+}
+
+*{box-sizing:border-box;}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--ink);
+  font-family:var(--sans);
+  line-height:1.55;
+}
+.page{
+  max-width:980px;
+  margin:0 auto;
+  padding:2.75rem 1.5rem 5rem;
+}
+
+/* ---------- header ---------- */
+header.hero{
+  display:flex;
+  flex-direction:column;
+  gap:.6rem;
+  margin-bottom:2.25rem;
+  padding-bottom:1.75rem;
+  border-bottom:1px solid var(--border);
+}
+.eyebrow{
+  font-family:var(--mono);
+  font-size:.72rem;
+  letter-spacing:.14em;
+  text-transform:uppercase;
+  color:var(--accent);
+  font-weight:600;
+}
+h1{
+  font-size:1.9rem;
+  margin:0;
+  text-wrap:balance;
+  letter-spacing:-.01em;
+}
+.dek{
+  color:var(--ink-dim);
+  max-width:62ch;
+  font-size:.98rem;
+}
+.meta-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:1.4rem;
+  margin-top:.5rem;
+  font-family:var(--mono);
+  font-size:.78rem;
+  color:var(--ink-dim);
+}
+.meta-row b{color:var(--ink);font-weight:600;}
+
+/* ---------- overview cards ---------- */
+.overview{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:.9rem;
+  margin-bottom:1.1rem;
+}
+@media (max-width:760px){ .overview{grid-template-columns:repeat(2,1fr);} }
+.hcard{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:1rem 1.05rem 1.1rem;
+  display:flex;
+  flex-direction:column;
+  gap:.55rem;
+  text-decoration:none;
+  color:inherit;
+}
+.hcard .name{
+  font-size:.82rem;
+  font-weight:650;
+  line-height:1.3;
+}
+.hcard .count-row{
+  display:flex;
+  align-items:baseline;
+  gap:.35rem;
+  font-family:var(--mono);
+}
+.hcard .count-row .n{font-size:1.7rem;font-weight:700;font-variant-numeric:tabular-nums;}
+.hcard .count-row .of{font-size:.78rem;color:var(--ink-dim);}
+.bar{
+  height:7px;
+  border-radius:4px;
+  background:var(--bad-bg);
+  border:1px solid var(--bad-border);
+  overflow:hidden;
+  display:flex;
+}
+.bar .fill{background:var(--good);height:100%;}
+.legend{
+  display:flex;
+  gap:.9rem;
+  font-family:var(--mono);
+  font-size:.72rem;
+  color:var(--ink-dim);
+}
+.legend span{display:inline-flex;align-items:center;gap:.35rem;}
+.dot{width:.5rem;height:.5rem;border-radius:50%;display:inline-block;}
+.dot.good{background:var(--good);}
+.dot.bad{background:var(--bad);}
+
+.totals-strip{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:1rem;
+  flex-wrap:wrap;
+  background:var(--surface-2);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:.85rem 1.1rem;
+  margin-bottom:2.75rem;
+  font-size:.86rem;
+  color:var(--ink-dim);
+}
+.totals-strip b{color:var(--ink);font-family:var(--mono);}
+
+/* ---------- section ---------- */
+section.hunter{
+  margin-bottom:3.25rem;
+}
+.hunter-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  gap:1rem;
+  flex-wrap:wrap;
+  border-bottom:2px solid var(--ink);
+  padding-bottom:.55rem;
+  margin-bottom:.9rem;
+}
+.hunter-head h2{
+  margin:0;
+  font-size:1.3rem;
+  letter-spacing:-.01em;
+}
+.hunter-head .tally{
+  font-family:var(--mono);
+  font-size:.85rem;
+  color:var(--ink-dim);
+  white-space:nowrap;
+}
+.hunter-head .tally b{color:var(--ink);}
+.callout{
+  background:var(--surface-2);
+  border-left:3px solid var(--accent);
+  border-radius:0 6px 6px 0;
+  padding:.7rem .95rem;
+  font-size:.88rem;
+  color:var(--ink-dim);
+  margin-bottom:1.1rem;
+}
+.callout b{color:var(--ink);}
+
+table.results{
+  width:100%;
+  border-collapse:collapse;
+  font-size:.86rem;
+}
+.table-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;}
+table.results th{
+  text-align:left;
+  font-family:var(--mono);
+  font-size:.68rem;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--ink-dim);
+  background:var(--surface-2);
+  padding:.6rem .8rem;
+  border-bottom:1px solid var(--border);
+  white-space:nowrap;
+}
+table.results td{
+  padding:.65rem .8rem;
+  border-bottom:1px solid var(--border);
+  vertical-align:top;
+}
+table.results tr:last-child td{border-bottom:none;}
+table.results tr:nth-child(even){background:color-mix(in srgb, var(--surface-2) 40%, transparent);}
+td.script-id{font-family:var(--mono);color:var(--ink-dim);white-space:nowrap;}
+td.script-name{font-weight:600;white-space:nowrap;}
+td.reason{color:var(--ink-dim);max-width:38ch;}
+
+.pill{
+  display:inline-flex;
+  align-items:center;
+  gap:.35rem;
+  padding:.2rem .55rem;
+  border-radius:999px;
+  font-family:var(--mono);
+  font-size:.7rem;
+  font-weight:600;
+  letter-spacing:.03em;
+  white-space:nowrap;
+}
+.pill.good{background:var(--good-bg);color:var(--good);border:1px solid var(--good-border);}
+.pill.bad{background:var(--bad-bg);color:var(--bad);border:1px solid var(--bad-border);}
+.pill.warn{background:var(--warn-bg);color:var(--warn);border:1px solid var(--warn-border);}
+
+.gaps{
+  margin-top:1.1rem;
+}
+.gaps summary{
+  cursor:pointer;
+  font-family:var(--mono);
+  font-size:.78rem;
+  color:var(--accent);
+  font-weight:600;
+  padding:.5rem 0;
+}
+.gaps summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px;}
+.gaps-list{
+  display:flex;
+  flex-direction:column;
+  gap:.6rem;
+  padding:.4rem 0 .2rem;
+}
+.gap-item{
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:.6rem .8rem;
+  font-size:.84rem;
+  background:var(--surface);
+}
+.gap-item .g-name{font-weight:650;display:block;margin-bottom:.15rem;}
+.gap-item .g-reason{color:var(--ink-dim);}
+
+footer{
+  margin-top:3rem;
+  padding-top:1.5rem;
+  border-top:1px solid var(--border);
+  font-size:.8rem;
+  color:var(--ink-dim);
+}
+footer h3{
+  font-size:.72rem;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  color:var(--ink);
+  font-family:var(--mono);
+  margin:0 0 .5rem;
+}
+footer ul{margin:.3rem 0 1rem;padding-left:1.1rem;}
+footer li{margin-bottom:.25rem;}
+code{
+  font-family:var(--mono);
+  background:var(--surface-2);
+  padding:.05rem .3rem;
+  border-radius:4px;
+  font-size:.9em;
+}
+a{color:var(--accent);}
+</style>
+
+<div class="page">
+
+<header class="hero">
+  <span class="eyebrow">Drill Coverage Audit &middot; dbserver&#8209;2&#8209;fis / Drill_DB</span>
+  <h1>Hunter Simulation Coverage Report</h1>
+  <p class="dek">For each production monitoring hunter, how many of its drill simulations actually got caught by the live pipeline &mdash; and the specific, sourced reason behind every miss.</p>
+  <div class="meta-row">
+    <span>Window: <b>2026&#8209;07&#8209;08 &rarr; 2026&#8209;07&#8209;13</b></span>
+    <span>Simulation source: <b>hunter&#8209;simulations/</b></span>
+    <span>Detection source: <b>AI&#8209;Hunters/reports/</b></span>
+    <span>Compiled: <b>2026&#8209;07&#8209;13</b></span>
+  </div>
+</header>
+
+<div class="overview">
+  <a class="hcard" href="#h-conn">
+    <span class="name">Connection Exhaustion</span>
+    <span class="count-row"><span class="n">5</span><span class="of">/ 5 achieved</span></span>
+    <div class="bar"><div class="fill" style="width:100%"></div></div>
+  </a>
+  <a class="hcard" href="#h-locks">
+    <span class="name">Locks, Deadlocks &amp; Blocking</span>
+    <span class="count-row"><span class="n">3</span><span class="of">/ 15 achieved</span></span>
+    <div class="bar"><div class="fill" style="width:20%"></div></div>
+  </a>
+  <a class="hcard" href="#h-slow">
+    <span class="name">Slow Queries</span>
+    <span class="count-row"><span class="n">5</span><span class="of">/ 6 achieved</span></span>
+    <div class="bar"><div class="fill" style="width:83%"></div></div>
+  </a>
+  <a class="hcard" href="#h-bloat">
+    <span class="name">Autovacuum / Bloat / Repl. / Temp Files</span>
+    <span class="count-row"><span class="n">4</span><span class="of">/ 9 achieved</span></span>
+    <div class="bar"><div class="fill" style="width:44%"></div></div>
+  </a>
+</div>
+
+<div class="totals-strip">
+  <span><b>35</b> scripted simulations across 4 hunters &middot; <b>17</b> achieved &middot; <b>18</b> not achieved</span>
+  <span class="legend"><span><span class="dot good"></span>detected &amp; evidenced in a production report</span><span><span class="dot bad"></span>not evidenced / structurally blocked</span></span>
+</div>
+
+<!-- ============ CONNECTION EXHAUSTION ============ -->
+<section class="hunter" id="h-conn">
+  <div class="hunter-head">
+    <h2>1&ensp;&middot;&ensp;Connection Exhaustion</h2>
+    <span class="tally"><b>5</b> total &nbsp;&bull;&nbsp; <b>5</b> achieved &nbsp;&bull;&nbsp; <b>0</b> not achieved</span>
+  </div>
+  <p class="callout">Clean sweep. The 2026&#8209;07&#8209;10 full-scale run produced two escalations &mdash; a Postgres-side <code>connection_pool_critical</code> at 10:49&nbsp;UTC and a PgBouncer-side <code>pgbouncer_pool_saturated_critical</code> at 11:21&nbsp;UTC &mdash; that between them evidence all five drills.</p>
+  <div class="table-wrap">
+  <table class="results">
+    <thead><tr><th>Script</th><th>Drill</th><th>Status</th><th>Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="script-id">06</td><td class="script-name">Idle-in-transaction blocker</td><td><span class="pill good">Achieved</span></td><td class="reason">Named top consumer (<code>drill_idle_txn</code>, 85 sessions) in the 10:49 UTC critical finding.</td></tr>
+      <tr><td class="script-id">07</td><td class="script-name">PgBouncer transaction-pool saturation</td><td><span class="pill good">Achieved</span></td><td class="reason">Drove the 11:21 UTC PgBouncer starvation escalation (cl_waiting=443, maxwait=95s) once Postgres headroom freed up.</td></tr>
+      <tr><td class="script-id">09</td><td class="script-name">Role connection-limit breach</td><td><span class="pill good">Achieved</span></td><td class="reason">Detected, but folded into the aggregate pool-saturation finding rather than escalated as its own standalone issue.</td></tr>
+      <tr><td class="script-id">10</td><td class="script-name">Idle connection storm / leak</td><td><span class="pill good">Achieved</span></td><td class="reason">Largest single contributor (<code>drill_idle_conn_storm</code>, 115 sessions) to the 10:49 UTC critical finding.</td></tr>
+      <tr><td class="script-id">11</td><td class="script-name">PgBouncer session-pool pinning</td><td><span class="pill good">Achieved</span></td><td class="reason">Caught via the pool-starvation tick. Caveat: this drill can only reproduce pinning at all if the target PgBouncer database is already configured <code>pool_mode&nbsp;=&nbsp;session</code> &mdash; a prerequisite the script cannot set itself, but which happened to hold in dev.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ============ LOCKS ============ -->
+<section class="hunter" id="h-locks">
+  <div class="hunter-head">
+    <h2>2&ensp;&middot;&ensp;Locks, Deadlocks &amp; Blocking Queries</h2>
+    <span class="tally"><b>15</b> total &nbsp;&bull;&nbsp; <b>3</b> achieved &nbsp;&bull;&nbsp; <b>12</b> not achieved</span>
+  </div>
+  <p class="callout"><b>Why the count looks low:</b> <code>run_all.sh</code> fires all 15 drills <em>concurrently</em> against shared tables by design. In the one full-scale run with evidence (2026&#8209;07&#8209;09, 20:26&nbsp;UTC), script&nbsp;04's table-wide <code>LOCK TABLE</code> landed first and became the root of a 22&#8209;session blocking chain that absorbed most of the other drills' sessions as blocked bystanders &mdash; before their own distinct failure signature (a deadlock cycle, a genuine idle-in-txn state, a row-level lock) could register. This is a run-design artifact, not evidence that those checks are undetectable in isolation. The most recent fast-scale run (default ~6&#8209;8s holds, well under the hunter's 300s poll interval) shows 0 issues, independently confirming the README's own documented reliability caveat.</p>
+  <div class="table-wrap">
+  <table class="results">
+    <thead><tr><th>Script</th><th>Drill</th><th>Status</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td class="script-id">04</td><td class="script-name">Table AccessExclusiveLock</td><td><span class="pill good">Achieved</span></td><td class="reason">Root of the critical <code>lock_blocking_critical</code> escalation (22 blocked sessions, depth 4) and a <code>ddl_blocking_detected</code> finding.</td></tr>
+      <tr><td class="script-id">06</td><td class="script-name">Advisory lock</td><td><span class="pill good">Achieved</span></td><td class="reason">Own dedicated <code>advisory_lock_blocking</code> warning fired both ticks; not re-escalated on repeat (dedupe window, by design).</td></tr>
+      <tr><td class="script-id">08</td><td class="script-name">MVW refresh lock</td><td><span class="pill good">Achieved</span></td><td class="reason">Own dedicated <code>ddl_blocking_detected</code> warning fired both ticks; dedupe-suppressed on repeat, same as above.</td></tr>
+      <tr><td class="script-id">02</td><td class="script-name">Row-lock blocking</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Preempted &mdash; sessions surface only as blocked bystanders inside script 04's chain, never as their own finding.</td></tr>
+      <tr><td class="script-id">03</td><td class="script-name">Classic deadlock</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Preempted before reaching its UPDATE/UPDATE cycle; <code>deadlock_spike</code> never fired in either report.</td></tr>
+      <tr><td class="script-id">05</td><td class="script-name">DDL blocks DML cascade</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Same concurrency preemption &mdash; sessions appear only inside script 04's blocked list.</td></tr>
+      <tr><td class="script-id">07</td><td class="script-name">Credits multi-module deadlock</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Zero occurrences in either report &mdash; fully absorbed by the concurrent storm before producing any signature.</td></tr>
+      <tr><td class="script-id">11</td><td class="script-name">Idle-in-transaction (indefinite)</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Report's own idle-in-txn counter read zero both ticks &mdash; sessions were lock-waiting (state=active) on script 04, never genuinely idle-in-txn.</td></tr>
+      <tr><td class="script-id">12</td><td class="script-name">Long txn blocks vacuum</td><td><span class="pill bad">Not achieved</span></td><td class="reason">By design &mdash; bloat detection lives in the autovacuum-bloat-replication-temp-files hunter, not this one (documented in the script header).</td></tr>
+      <tr><td class="script-id">13</td><td class="script-name">FK contention</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Genuine gap &mdash; the FK&#8209;1 <code>fk_contention_detected</code> check exists and this drill is documented to feed it, but it never fired.</td></tr>
+      <tr><td class="script-id">14</td><td class="script-name">VACUUM FULL blocking</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Insufficient data volume in dev &mdash; <code>lock_test_accounts</code> is only 5 rows, so VACUUM FULL finishes in milliseconds, far too fast for a 300s poll to ever sample it (documented in the script header).</td></tr>
+      <tr><td class="script-id">15</td><td class="script-name">Non-concurrent CREATE INDEX blocks DML</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Same insufficient-data-volume gap as script 14 &mdash; CREATE INDEX on the 5-row table completes in milliseconds.</td></tr>
+      <tr><td class="script-id">16</td><td class="script-name">Connection exhaustion (in-folder demo)</td><td><span class="pill bad">Not achieved</span></td><td class="reason">By design &mdash; owned by the connection-exhaustion hunter (topic 1), explicitly "not gated by any check in this hunter."</td></tr>
+      <tr><td class="script-id">17</td><td class="script-name">Stuck-worker workflow blockage</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Zero occurrences in either report &mdash; inferred preemption by script 04's table lock.</td></tr>
+      <tr><td class="script-id">18</td><td class="script-name">Lock queue amplification</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Preempted &mdash; its own DDL needed the same AccessExclusiveLock script 04 already held, so its A&rarr;B&rarr;12-waiter chain merged into script 04's instead of forming its own root.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<!-- ============ SLOW QUERIES ============ -->
+<section class="hunter" id="h-slow">
+  <div class="hunter-head">
+    <h2>3&ensp;&middot;&ensp;Slow Queries</h2>
+    <span class="tally"><b>6</b> total &nbsp;&bull;&nbsp; <b>5</b> achieved &nbsp;&bull;&nbsp; <b>1</b> not achieved</span>
+  </div>
+  <div class="table-wrap">
+  <table class="results">
+    <thead><tr><th>Script</th><th>Drill</th><th>Status</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td class="script-id">02</td><td class="script-name">Missing index scan</td><td><span class="pill good">Achieved</span></td><td class="reason">Fired as <code>query_slow</code> in two separate ticks. First occurrence hit a Claude dispatch failure &mdash; a pipeline gap, not a reproduction failure.</td></tr>
+      <tr><td class="script-id">03</td><td class="script-name">Function-wrapped predicate</td><td><span class="pill good">Achieved</span></td><td class="reason">Fired as <code>query_slow</code> (46.5s), resolved deterministically.</td></tr>
+      <tr><td class="script-id">04</td><td class="script-name">Offset pagination</td><td><span class="pill good">Achieved</span></td><td class="reason">Fired as <code>query_slow</code> (146.1s deep-offset query).</td></tr>
+      <tr><td class="script-id">05</td><td class="script-name">JSON processing spike</td><td><span class="pill good">Achieved</span></td><td class="reason">Two sessions caught; one escalation correctly identified the embedded <code>pg_sleep(2400)</code> as synthetic.</td></tr>
+      <tr><td class="script-id">06</td><td class="script-name">Stale statistics</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Confirmed pipeline gap &mdash; the check's own SQL fetches the exact qualifying row (never analyzed, autovacuum off), but no <code>stats_never_analyzed</code>/<code>stats_stale</code> issue was ever raised in the full monitor log. Likely dropped because the same table already produced an <code>autovacuum_disabled</code> issue at the same priority in the same tick.</td></tr>
+      <tr><td class="script-id">07</td><td class="script-name">Retry storm</td><td><span class="pill good">Achieved</span></td><td class="reason">Fired as <code>query_slow</code> three times per the full monitor log &mdash; the evidencing report files were since rotated off disk (only the newest two + latest are retained), so it isn't visible in the currently-kept reports.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <details class="gaps">
+    <summary>+ 3 scenarios with no simulation script at all (topic-level gaps)</summary>
+    <div class="gaps-list">
+      <div class="gap-item"><span class="g-name"><code>CREATE STATISTICS</code> for correlated columns</span><span class="g-reason">Mentioned in script 06's output but not auto-applied by any drill.</span></div>
+      <div class="gap-item"><span class="g-name">Bad join plan &amp; generic prepared-plan problem</span><span class="g-reason">Covered narratively in the source runbook but not scripted &mdash; they need multi-table join setup / <code>PREPARE</code> session state beyond this folder's shared tables.</span></div>
+      <div class="gap-item"><span class="g-name"><code>pg_trgm</code>/GIN index for substring <code>LIKE</code> matches</span><span class="g-reason">Mentioned in script 05's output but not scripted.</span></div>
+    </div>
+  </details>
+</section>
+
+<!-- ============ AUTOVACUUM / BLOAT / REPLICATION / TEMP FILES ============ -->
+<section class="hunter" id="h-bloat">
+  <div class="hunter-head">
+    <h2>4&ensp;&middot;&ensp;Autovacuum / Bloat / Replication / Temp Files</h2>
+    <span class="tally"><b>9</b> total &nbsp;&bull;&nbsp; <b>4</b> achieved &nbsp;&bull;&nbsp; <b>5</b> not achieved</span>
+  </div>
+  <p class="callout">Half of this topic's own checks (table/index bloat, autovacuum-disabled, stale statistics) are actually owned by the <b>slow-queries</b> hunter, not this one &mdash; this hunter only owns temp-file-spill and config-hygiene checks. Several "not achieved" rows below are misses against that other hunter, not this one.</p>
+  <div class="table-wrap">
+  <table class="results">
+    <thead><tr><th>Script</th><th>Drill</th><th>Status</th><th>Reason</th></tr></thead>
+    <tbody>
+      <tr><td class="script-id">07-sort</td><td class="script-name">Temp-file spill: sort</td><td><span class="pill good">Achieved</span></td><td class="reason">Named directly in the <code>temp_spill_warning</code> evidence (11 GB spilled on one call).</td></tr>
+      <tr><td class="script-id">07-group</td><td class="script-name">Temp-file spill: hash aggregate</td><td><span class="pill good">Achieved</span></td><td class="reason">Named directly in the same <code>temp_spill_warning</code> evidence (850 MB spilled).</td></tr>
+      <tr><td class="script-id">07-hash</td><td class="script-name">Temp-file spill: hash join</td><td><span class="pill good">Achieved</span></td><td class="reason">Contributed to the aggregate database-level <code>temp_spill_warning</code> (5941 MB/hour) but wasn't individually itemized in the top-5 evidence list.</td></tr>
+      <tr><td class="script-id">08</td><td class="script-name">CREATE INDEX temp spike</td><td><span class="pill good">Achieved</span></td><td class="reason">Its own index build named directly in evidence (7798 MB spilled across 2 calls).</td></tr>
+      <tr><td class="script-id">03</td><td class="script-name">Table bloat from UPDATE/DELETE churn</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Script bug: the PL/pgSQL churn loop fails immediately with <code>ERROR: invalid transaction termination</code>, reproduced identically across two separate runs. Even the residual bloat left over from earlier successful runs (100% dead-tuple ratio) never triggered a finding &mdash; that check lives in the slow-queries hunter and never fired there either.</td></tr>
+      <tr><td class="script-id">04</td><td class="script-name">Index bloat</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Same PL/pgSQL script bug as script 03 &mdash; identical <code>invalid transaction termination</code> error, churn loop never completes.</td></tr>
+      <tr><td class="script-id">05</td><td class="script-name">Autovacuum worker starvation</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Ran successfully, but produced no matching finding in the slow-queries hunter (which owns this check) &mdash; a manual VACUUM here can only be caught if large enough to trip <code>query_slow</code>/<code>query_critical</code> instead, which it wasn't at this scale.</td></tr>
+      <tr><td class="script-id">06</td><td class="script-name">Stale statistics &rarr; bad plan</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Shares its table with script 03's churn; after that churn, live-tuple count drops to 0 (everything becomes a dead tuple), which fails the stale-stats check's own <code>n_live_tup &gt; 100000</code> threshold outright &mdash; compounded by the same stats-detection pipeline gap found under slow-queries script 06.</td></tr>
+      <tr><td class="script-id">09</td><td class="script-name">Inactive replication slot retains WAL</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Environment config gap &mdash; the drill fails outright with <code>ERROR: replication slots can only be used if "max_replication_slots" &gt; 0</code>; this parameter is 0 on the dev instance.</td></tr>
+      <tr><td class="script-id">10</td><td class="script-name">Write surge &rarr; replica lag</td><td><span class="pill bad">Not achieved</span></td><td class="reason">Structurally cannot fire without a real attached RDS read replica &mdash; <code>REPLICA_PGHOST</code> wasn't set for this run, so only the primary-side write surge ran; the replica-side lag check cannot fire without one, at any row count.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <details class="gaps">
+    <summary>+ 4 known gaps this topic cannot script at all</summary>
+    <div class="gaps-list">
+      <div class="gap-item"><span class="g-name">Temp-file concurrency storm (QC&#8209;1)</span><span class="g-reason">No script targets it &mdash; scripts 07/08 each run one query per invocation, not a fan-out of 20+ concurrent identical ones.</span></div>
+      <div class="gap-item"><span class="g-name">Config-hygiene checks (CH&#8209;1..CH&#8209;5)</span><span class="g-reason"><code>log_temp_files</code>, <code>temp_file_limit</code>, <code>pg_stat_statements</code> presence, activity-snapshot mechanism, role-level overrides &mdash; static RDS-parameter-group/extension checks, not something a load-generating drill can toggle.</span></div>
+      <div class="gap-item"><span class="g-name">Transaction ID wraparound</span><span class="g-reason">Forcing genuine wraparound needs billions of real transactions; there's no safe way to drill the failure itself, only detect its risk.</span></div>
+      <div class="gap-item"><span class="g-name">DMS/CDC consumer lag</span><span class="g-reason">Script 09 reproduces the WAL-retention signal an inactive slot produces, but a real broken DMS task requires an actual DMS replication instance &mdash; out of scope for a single script.</span></div>
+    </div>
+  </details>
+</section>
+
+<footer>
+  <h3>Methodology</h3>
+  <p>"Achieved" means the drill's failure signature was actually named as evidence in a production monitor tick report under <code>C:\SysCloud\Production\AI-Hunters\reports\</code> (or, for slow-queries script 07, in the full monitor log after its evidencing reports were rotated off disk). "Not achieved" covers four distinct situations, deliberately kept separate above rather than collapsed into one verdict: a genuine detection-pipeline gap, an environment/data limitation in the dev instance, a check that is owned by a different hunter than the one the folder name suggests, and one confirmed script bug. Script and drill inventories are drawn from each topic's own <code>README.md</code> and <code>run_all.sh</code> manifest; execution outcomes are drawn from <code>session-run-output.log</code> and <code>run_all_logs/</code>.</p>
+  <ul>
+    <li>Target instance: <code>dbserver-2-fis.cjty2dh9czli.us-east-1.rds.amazonaws.com</code> / database <code>Drill_DB</code></li>
+    <li>Simulation scripts: <code>C:\SysCloud\Tools\dba-issues\hunter-simulations\</code></li>
+    <li>Detection reports: <code>C:\SysCloud\Production\AI-Hunters\reports\</code></li>
+  </ul>
+</footer>
+
+</div>
