@@ -24,6 +24,7 @@
 CREATE TABLE IF NOT EXISTS lock_test_accounts (
     id      integer PRIMARY KEY,
     name    text    NOT NULL,
+    status  text    NULL,
     balance numeric NOT NULL DEFAULT 0
 );
 
@@ -61,8 +62,14 @@ CREATE INDEX IF NOT EXISTS idx_lock_test_child_parent_id
 TRUNCATE lock_test_child;
 TRUNCATE lock_test_parent CASCADE;
 
+-- Parent Gamma (id=3) is intentionally left WITHOUT any pre-seeded child rows —
+-- the FK contention drill (13) needs a parent whose only referencing row is the
+-- one IT inserts mid-drill. Parent Alpha/Beta (id=1/2) already have committed
+-- child rows below; a DELETE against either fails on THOSE rows immediately
+-- (a plain FK violation) without ever needing to wait on anything, so a drill
+-- using id=1/2 never produces a genuine lock wait for the hunter to observe.
 INSERT INTO lock_test_parent (id, name)
-VALUES (1, 'Parent Alpha'), (2, 'Parent Beta');
+VALUES (1, 'Parent Alpha'), (2, 'Parent Beta'), (3, 'Parent Gamma');
 
 INSERT INTO lock_test_child (id, parent_id, payload) VALUES
     (1, 1, 'child-a1'),

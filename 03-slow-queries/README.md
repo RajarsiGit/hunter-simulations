@@ -42,12 +42,12 @@ primary key, by design. Setup finishes in seconds at this scale.
 
 | File | Reproduces | Key observation |
 |---|---|---|
-| `02_simulate_missing_index_scan.sh` | Seq scan on `slowq_orders.status` (no index) | `Seq Scan`, `Rows Removed by Filter: many` in EXPLAIN — left unindexed |
-| `03_simulate_function_wrapped_predicate.sh` | `lower(email) = ...` ignores a plain index on `email` | Plain index present but unused (still `Seq Scan`) — no expression index added |
-| `04_simulate_offset_pagination.sh` | Deep `OFFSET N LIMIT 50` cost grows with `N` | Execution time scales with offset depth; keyset pagination (`WHERE created_at < cursor`) stays flat |
-| `05_simulate_json_processing_spike.sh` | `data->>'status' LIKE 'a%'` on unindexed jsonb | High-CPU seq scan across all rows — left unindexed |
-| `06_simulate_stale_statistics.sh` | Bulk insert without `ANALYZE`, autovacuum disabled, skews the planner's row estimate | `EXPLAIN` `rows=` estimate far off from actual — statistics left stale |
-| `07_simulate_retry_storm.sh` | Concurrent app retries multiply load on an already-slow query | `pg_stat_activity` shows N sessions all running the same query under one `application_name` |
+| `02_simulate_missing_index_scan.sh [hold_seconds]` | Seq scan on `slowq_orders.status` (no index) | `Seq Scan`, `Rows Removed by Filter: many` in EXPLAIN — left unindexed |
+| `03_simulate_function_wrapped_predicate.sh [hold_seconds]` | `lower(email) = ...` ignores a plain index on `email` | Plain index present but unused (still `Seq Scan`) — no expression index added |
+| `04_simulate_offset_pagination.sh [deep_offset] [hold_seconds]` | Deep `OFFSET N LIMIT 50` cost grows with `N` | Execution time scales with offset depth; keyset pagination (`WHERE created_at < cursor`) stays flat |
+| `05_simulate_json_processing_spike.sh [hold_seconds]` | `data->>'status' LIKE 'a%'` on unindexed jsonb | High-CPU seq scan across all rows — left unindexed |
+| `06_simulate_stale_statistics.sh [hold_seconds]` | Bulk insert without `ANALYZE`, autovacuum disabled, skews the planner's row estimate | `EXPLAIN` `rows=` estimate far off from actual — statistics left stale |
+| `07_simulate_retry_storm.sh [session_count] [retries] [hold_seconds]` | Concurrent app retries multiply load on an already-slow query | `pg_stat_activity` shows N sessions all running the same query under one `application_name` |
 | `08_diagnostic_query_sweep.sql` | — (detection) | Full sweep: active queries, wait events, `pg_stat_statements` top/N+1 candidates, missing-index candidates, stale-stats candidates, session fan-out, index bloat |
 
 ## Automated full run
@@ -68,6 +68,30 @@ DRILL_YES=1 ./run_all.sh
 # Doc-example scale
 ./run_all.sh --full --yes
 ```
+
+## Automated sequential run
+
+`run_sequential.sh` is the one-at-a-time counterpart to `run_all.sh`: setup
+(01) runs once, then the same 6 drills run in order (02→03→04→05→06→07),
+each one blocking until it finishes, then stopping to wait for you to press
+Enter before starting the next one — a manual gate instead of a timed
+pause, so you can check the hunter/dashboard between drills. The
+diagnostic sweep (08) runs once, after every drill finishes.
+
+```bash
+./run_sequential.sh --list             # preview
+DRILL_YES=1 ./run_sequential.sh        # fast, manual gate between drills, 10s hold
+./run_sequential.sh --skip 07 --yes    # skip the retry-storm drill
+./run_sequential.sh --hold 60 --yes    # hold each drill's session/window open for 60s
+```
+
+`--hold N` (default 10) controls how long each drill sustains its
+state='active' session (02/03/04/05, via `hold_session_active`) or pads its
+total wall time (06/07, via `ensure_min_duration`) — all six drill scripts
+now accept `hold_seconds` as a positional argument even when run standalone,
+e.g. `./02_simulate_missing_index_scan.sh 60`. The hunter's poll interval is
+300s and `query_slow` needs >=30s, so the 10s default is not guaranteed
+reliable detection on its own — pass 60+ for a real observation window.
 
 ## Quick-start examples
 

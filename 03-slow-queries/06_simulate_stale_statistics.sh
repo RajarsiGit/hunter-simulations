@@ -18,11 +18,20 @@
 #             SELECT * FROM slowq_orders WHERE customer_id = 1 AND status = 'failed';
 #
 # Usage:
-#   ./06_simulate_stale_statistics.sh [--yes]
+#   ./06_simulate_stale_statistics.sh [hold_seconds] [--yes]
+#
+# Defaults: hold_seconds=10 — minimum total drill wall time via
+# ensure_min_duration (_lib/env.sh), padding the observation window after
+# the bulk insert/EXPLAIN above. Well under the hunter's 300s poll interval;
+# pass a larger value (e.g. 60+) for a wider hunter-detection window.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
+
+POSARGS=()
+while IFS= read -r line; do POSARGS+=("${line}"); done < <(strip_flags "$@")
+HOLD_SECONDS="${POSARGS[0]:-10}"
 
 PSQL=(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}")
 
@@ -70,6 +79,6 @@ echo "--- EXPLAIN with stale statistics (compare 'rows=' estimate vs actual) ---
 run_explain
 
 echo ""
-ensure_min_duration 10
+ensure_min_duration "${HOLD_SECONDS}"
 echo "Drill complete. Stale statistics (autovacuum disabled, last_analyze/last_autoanalyze"
 echo "left null) are left in place on slowq_orders for the hunter to detect."

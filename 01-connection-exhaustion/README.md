@@ -59,6 +59,29 @@ DRILL_YES=1 ./run_all.sh
 ./run_all.sh --full --yes
 ```
 
+## Automated sequential run
+
+`run_sequential.sh` is the one-at-a-time counterpart to `run_all.sh`: it
+runs the same five drills in order (06 → 07 → 09 → 10 → 11), each one
+blocking until it self-expires, then stops and waits for you to press
+Enter before starting the next one — a manual gate instead of a timed
+pause, so you can check the hunter/dashboard between drills. Detection
+(03/04/01) runs once, after every drill finishes.
+
+```bash
+# Preview the manifest without touching the DB
+./run_sequential.sh --list
+
+# Defaults: 20s hold per drill, manual Enter-to-continue gate between drills
+DRILL_YES=1 ./run_sequential.sh
+
+# Skip the two drills that need extra pre-existing config (DRILL_ROLE / PgBouncer session mode)
+./run_sequential.sh --skip 09,11 --yes
+
+# Longer hold for reliable hunter detection (poller runs every 300s)
+./run_sequential.sh --hold 300 --yes
+```
+
 ## Quick-start examples
 
 ```bash

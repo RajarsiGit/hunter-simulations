@@ -10,12 +10,17 @@
 # multiplies load instead of recovering from it.
 #
 # Usage:
-#   ./07_simulate_retry_storm.sh [session_count] [retries_per_session] [--yes]
+#   ./07_simulate_retry_storm.sh [session_count] [retries_per_session] [hold_seconds] [--yes]
 #
 # Defaults: session_count=15, retries_per_session=5 — sized so the whole
 # drill (spawn + retries + wait) finishes in <=20s. Raise both for a heavier
 # manual/CI stress run; at very high counts this can itself trigger
 # connection-exhaustion symptoms alongside the slow-query signal.
+#
+# hold_seconds=10 — minimum total drill wall time via ensure_min_duration
+# (_lib/env.sh), padding the observation window after the storm's sessions
+# finish. Well under the hunter's 300s poll interval; pass a larger value
+# (e.g. 60+) for a wider hunter-detection window.
 #
 # NOTE: a large session_count may exceed max_connections on a small drill
 # instance (RDS default formula is roughly DBInstanceClassMemory /
@@ -35,6 +40,7 @@ POSARGS=()
 while IFS= read -r line; do POSARGS+=("${line}"); done < <(strip_flags "$@")
 SESSION_COUNT="${POSARGS[0]:-15}"
 RETRIES="${POSARGS[1]:-5}"
+HOLD_SECONDS="${POSARGS[2]:-10}"
 
 PSQL=(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}")
 
@@ -79,6 +85,6 @@ echo "--- pg_stat_statements for the storm query (if extension installed) ---"
     || echo "(pg_stat_statements not available/installed — skipped)"
 
 echo ""
-ensure_min_duration 10
+ensure_min_duration "${HOLD_SECONDS}"
 echo "Drill complete. Real fixes: disable aggressive client-side retry, add backoff+jitter,"
 echo "add a circuit breaker, rate-limit the failing endpoint, and fix the root slow query."

@@ -13,11 +13,20 @@
 #             WHERE status = 'failed';   -- Seq Scan, Rows Removed by Filter: many
 #
 # Usage:
-#   ./02_simulate_missing_index_scan.sh [--yes]
+#   ./02_simulate_missing_index_scan.sh [hold_seconds] [--yes]
+#
+# Defaults: hold_seconds=5 — how long the sustained session below stays
+# state='active' (see hold_session_active in _lib/env.sh). 5s is well under
+# the hunter's 300s poll interval/query_slow >=30s threshold; pass a larger
+# value (e.g. 60+) for a wider hunter-detection window.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
+
+POSARGS=()
+while IFS= read -r line; do POSARGS+=("${line}"); done < <(strip_flags "$@")
+HOLD_SECONDS="${POSARGS[0]:-5}"
 
 PSQL=(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}")
 
@@ -46,7 +55,7 @@ echo "    bursts a couple thousand seq scans (seq_scan_tables, >1000 threshold)"
 echo "    so a quick poll can catch it — sized for a <=20s drill run, not for"
 echo "    clearing the hunter's 300s poll interval/query_critical threshold."
 hold_session_active "drill_missing_index_scan" \
-    "SELECT * FROM slowq_orders WHERE status = 'failed'" 5
+    "SELECT * FROM slowq_orders WHERE status = 'failed'" "${HOLD_SECONDS}"
 run_seq_scan_burst "drill_missing_index_scan" \
     "1 FROM slowq_orders WHERE status = 'failed'" 2000
 wait "${HOLD_PID}" 2>/dev/null || true

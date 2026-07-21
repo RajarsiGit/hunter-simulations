@@ -54,6 +54,19 @@ DRILL_YES=1 ./run_all.sh           # fast, full manifest
 ./run_all.sh --skip 16 --yes       # skip the connection-exhaustion overlap drill
 ```
 
+`run_sequential.sh` is the one-drill-at-a-time counterpart: setup (01) runs
+once, then the same 15 drills run in order and each finishes before the
+next starts, then the script pauses on a manual Enter-to-continue prompt
+before the next drill (not skipped by `--yes` — that gate is the point),
+with a configurable per-drill hold (`--hold`, default 20s) — useful when
+you want each drill individually visible to a hunter rather than stacked.
+
+```bash
+./run_sequential.sh --list             # preview
+DRILL_YES=1 ./run_sequential.sh        # 20s hold, manual gate between drills
+./run_sequential.sh --hold 900 --yes   # longer hold for reliable detection
+```
+
 ## Scripts
 
 | File | Reproduces | When to reach for it |

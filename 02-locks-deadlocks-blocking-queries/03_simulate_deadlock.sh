@@ -62,10 +62,10 @@ echo ""
 echo "--- Spawning Session A (locks id=${ROW_A} first) ---"
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_deadlock_A';
-         SET deadlock_timeout = '2s';
+         SET deadlock_timeout = '15s';
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 10 WHERE id = ${ROW_A};
-         SELECT pg_sleep(2);
+         SELECT pg_sleep(15);
          UPDATE lock_test_accounts SET balance = balance + 10 WHERE id = ${ROW_B};
          COMMIT;" \
      2>&1 | sed 's/^/  [Session A] /' &
@@ -83,10 +83,10 @@ sleep 1
 echo "--- Spawning Session B (locks id=${ROW_B} first) ---"
 psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
      -c "SET application_name = 'drill_deadlock_B';
-         SET deadlock_timeout = '2s';
+         SET deadlock_timeout = '15s';
          BEGIN;
          UPDATE lock_test_accounts SET balance = balance + 20 WHERE id = ${ROW_B};
-         SELECT pg_sleep(2);
+         SELECT pg_sleep(15);
          UPDATE lock_test_accounts SET balance = balance + 20 WHERE id = ${ROW_A};
          COMMIT;" \
      2>&1 | sed 's/^/  [Session B] /' &

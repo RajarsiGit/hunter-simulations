@@ -38,14 +38,18 @@ is invisible to a poll-based hunter):
    `AI-Hunters/queries/slow-queries/slow-queries-seq-scans.sql`, though at
    the lower burst counts used by `04`/`05` it may land under 1000.
 
-CAVEAT: every drill script in this folder (01-07) is now sized to finish in
+CAVEAT: every drill script in this folder (02-07) is now sized to finish in
 <=20s by default — hold durations, burst counts, and seeded row counts were
 all cut down from far larger values that were originally tuned to clear the
 live hunter's 300s poll interval and its `query_critical` >=1800s / `query_slow`
 >=30s thresholds with wide margin. That hunter-detection reliability is
-knowingly deprioritized here in favor of a fast local drill run — pass larger
-explicit arguments (e.g. `./07_simulate_retry_storm.sh 1500 300`) or edit a
-script's defaults directly if you need a real hunter-detection window.
+knowingly deprioritized here in favor of a fast local drill run — every
+drill in `02`-`07` now takes an explicit `hold_seconds` argument (default
+5 for `02`/`03`/`04`/`05`, 10 for `06`/`07`) that directly controls this,
+e.g. `./02_simulate_missing_index_scan.sh 60` or, for the whole manifest at
+once, `./run_sequential.sh --hold 60`; raising session/retry counts (e.g.
+`./07_simulate_retry_storm.sh 1500 300`) still works too if you want more
+load rather than just a longer window.
 
 `06` (stale statistics) additionally disables
 per-table autovacuum and resets `slowq_orders`' stat counters before the bulk
@@ -80,17 +84,30 @@ aggressive) control offset depth / retry-storm size.
 DRILL_YES=1 ./run_all.sh           # fast, full manifest
 ```
 
+`run_sequential.sh` is the one-drill-at-a-time counterpart: setup (01) runs
+once, then the same 6 drills run in order and each finishes before the
+next starts, then the script pauses on a manual Enter-to-continue prompt
+before the next drill (not skipped by `--yes` — that gate is the point).
+`--hold N` (default 10) is threaded through to every drill's `hold_seconds`
+argument.
+
+```bash
+./run_sequential.sh --list             # preview
+DRILL_YES=1 ./run_sequential.sh        # manual gate between drills, 10s hold
+./run_sequential.sh --hold 60 --yes    # 60s hold per drill
+```
+
 ## Script catalog
 
 | Script | Reproduces |
 |---|---|
 | `01_setup_slow_query_tables.sql` | — (setup) Creates `slowq_orders` (300k rows), `slowq_customers` (50k), `slowq_json_events` (300k), no non-PK indexes |
-| `02_simulate_missing_index_scan.sh` | Seq scan from an unindexed filter column |
-| `03_simulate_function_wrapped_predicate.sh` | `lower(email) = ...` defeating a plain index |
-| `04_simulate_offset_pagination.sh` | Deep `OFFSET` pagination vs. keyset pagination — read-only, no confirm needed |
-| `05_simulate_json_processing_spike.sh` | CPU spike from unindexed `jsonb ->> field` filtering |
-| `06_simulate_stale_statistics.sh` | Bad plan from stale `pg_stat_user_tables` statistics after bulk insert (autovacuum left disabled) |
-| `07_simulate_retry_storm.sh` | Application retry storm multiplying load on an already-slow query — `[session_count] [retries_per_session]` |
+| `02_simulate_missing_index_scan.sh` | Seq scan from an unindexed filter column — `[hold_seconds]` |
+| `03_simulate_function_wrapped_predicate.sh` | `lower(email) = ...` defeating a plain index — `[hold_seconds]` |
+| `04_simulate_offset_pagination.sh` | Deep `OFFSET` pagination vs. keyset pagination — read-only, no confirm needed — `[deep_offset] [hold_seconds]` |
+| `05_simulate_json_processing_spike.sh` | CPU spike from unindexed `jsonb ->> field` filtering — `[hold_seconds]` |
+| `06_simulate_stale_statistics.sh` | Bad plan from stale `pg_stat_user_tables` statistics after bulk insert (autovacuum left disabled) — `[hold_seconds]` |
+| `07_simulate_retry_storm.sh` | Application retry storm multiplying load on an already-slow query — `[session_count] [retries_per_session] [hold_seconds]` |
 | `08_diagnostic_query_sweep.sql` | — (detection) Full first-response sweep: active queries, wait events, `pg_stat_statements` top/N+1 candidates, missing-index candidates, stale-stats candidates, session fan-out, index bloat |
 
 ## Quick start

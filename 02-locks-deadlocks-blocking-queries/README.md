@@ -100,6 +100,23 @@ DRILL_YES=1 ./run_all.sh
 ./run_all.sh --full --yes
 ```
 
+## Automated sequential run
+
+`run_sequential.sh` is the one-at-a-time counterpart to `run_all.sh`: setup
+(01) runs once, then the same 15 drills run in order (02→03→04→05→06→07→
+08→11→12→13→14→15→16→17→18), each one blocking until it finishes, then
+stopping to wait for you to press Enter before starting the next one — a
+manual gate instead of a timed pause, so you can check the hunter/dashboard
+between drills. Triage (09) + automated RCA (20) run once, after every
+drill finishes.
+
+```bash
+./run_sequential.sh --list             # preview
+DRILL_YES=1 ./run_sequential.sh        # 20s hold, manual gate between drills
+./run_sequential.sh --skip 16 --yes    # skip the connection-exhaustion overlap drill
+./run_sequential.sh --hold 900 --yes   # longer hold for reliable hunter detection
+```
+
 ## Quick-start examples
 
 ```bash

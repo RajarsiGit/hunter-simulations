@@ -14,11 +14,20 @@
 #   Simulate: SELECT count(*) FROM slowq_json_events WHERE data->>'status' LIKE 'a%';
 #
 # Usage:
-#   ./05_simulate_json_processing_spike.sh [--yes]
+#   ./05_simulate_json_processing_spike.sh [hold_seconds] [--yes]
+#
+# Defaults: hold_seconds=5 — how long the sustained session below stays
+# state='active' (see hold_session_active in _lib/env.sh). 5s is well under
+# the hunter's 300s poll interval/query_slow >=30s threshold; pass a larger
+# value (e.g. 60+) for a wider hunter-detection window.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
+
+POSARGS=()
+while IFS= read -r line; do POSARGS+=("${line}"); done < <(strip_flags "$@")
+HOLD_SECONDS="${POSARGS[0]:-5}"
 
 PSQL=(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}")
 
@@ -43,7 +52,7 @@ echo "    burst count here since each scan pays real per-row jsonb-deserialize"
 echo "    cost (the whole point of this drill) — sized for a <=20s drill run,"
 echo "    not for clearing the hunter's 300s poll interval/query_critical threshold."
 hold_session_active "drill_json_cpu_spike" \
-    "SELECT count(*) AS c FROM slowq_json_events WHERE data->>'status' LIKE 'a%'" 5
+    "SELECT count(*) AS c FROM slowq_json_events WHERE data->>'status' LIKE 'a%'" "${HOLD_SECONDS}"
 run_seq_scan_burst "drill_json_cpu_spike" \
     "count(*) FROM slowq_json_events WHERE data->>'status' LIKE 'a%'" 300
 wait "${HOLD_PID}" 2>/dev/null || true

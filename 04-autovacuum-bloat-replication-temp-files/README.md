@@ -119,6 +119,26 @@ DRILL_YES=1 ./run_all.sh
 ./run_all.sh --full --yes
 ```
 
+## Automated sequential run
+
+`run_sequential.sh` is the one-at-a-time counterpart to `run_all.sh`: setup
+(01) runs once, then the same 9 drills run in order (03→04→05→06→07-sort→
+07-hash→07-group→08→09→10), each one blocking until it finishes, then
+stopping to wait for you to press Enter before starting the next one — a
+manual gate instead of a timed pause, so you can check the hunter/dashboard
+between drills. The single shared stats reset before the temp-spill drills
+(07-sort/07-hash/07-group/08) still happens once, up front — running them
+one at a time instead of concurrently doesn't break the stacking mechanic,
+since `pg_stat_database.temp_bytes` accumulates from that one reset
+regardless of timing. The diagnostic sweep (02) runs once, after every
+drill finishes.
+
+```bash
+./run_sequential.sh --list                          # preview
+DRILL_YES=1 ./run_sequential.sh                      # fast, manual gate between drills
+./run_sequential.sh --skip 07-hash,07-group --yes    # skip the two slower spill modes
+```
+
 ## Quick-start examples
 
 Every drill below finishes in well under 20s at its default row_count. Pass a

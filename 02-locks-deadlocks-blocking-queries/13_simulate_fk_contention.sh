@@ -10,14 +10,21 @@
 # Reproduces two FK contention patterns:
 #
 # Mode A: child_blocks_parent
-#   Session A inserts a child row referencing parent_id=1 → holds shared lock.
-#   Session B tries to DELETE the parent row (id=1) → blocked by Session A.
+#   Session A inserts a child row referencing parent_id=3 → holds shared lock.
+#   Session B tries to DELETE the parent row (id=3) → blocked by Session A.
 #   Real-world: deleting a backup account/org that still has in-flight jobs.
 #
 # Mode B: parent_blocks_child
-#   Session A deletes parent row (id=2) but does not commit.
-#   Session B inserts a child row referencing parent_id=2 → blocked (FK check).
+#   Session A deletes parent row (id=3) but does not commit.
+#   Session B inserts a child row referencing parent_id=3 → blocked (FK check).
 #   Real-world: concurrent parent delete + child insert race in backup workflows.
+#
+# Both modes target parent id=3 ("Parent Gamma") — 01_setup_lock_drill_tables.sql
+# deliberately leaves it childless. Parent Alpha/Beta (id=1/2) already have
+# committed child rows from setup; a DELETE against either fails on THOSE rows
+# instantly (an ordinary FK violation) without ever waiting on anything, so
+# using id=1/2 here never produces a genuine lock wait — confirmed by a real
+# run where Session B's DELETE errored immediately instead of blocking.
 #
 # FK contention is often confused with row-lock blocking. The tell is:
 #   - lock_test_parent shows a SIReadLock or RowShareLock held by the child INSERT
@@ -73,8 +80,8 @@ if [[ "${MODE}" == "child_blocks_parent" ]]; then
     # Mode A: child INSERT holds RowShareLock on parent, blocking parent DELETE
     # -------------------------------------------------------------------------
     echo "--- Mode A: child_blocks_parent ---"
-    echo "    Session A: INSERT child referencing parent_id=1 (holds transaction open)"
-    echo "    Session B: DELETE FROM lock_test_parent WHERE id=1 → blocked"
+    echo "    Session A: INSERT child referencing parent_id=3 (holds transaction open)"
+    echo "    Session B: DELETE FROM lock_test_parent WHERE id=3 → blocked"
     echo ""
 
     echo "--- Session A: insert child row + hold transaction ---"
@@ -84,7 +91,7 @@ if [[ "${MODE}" == "child_blocks_parent" ]]; then
              SET idle_in_transaction_session_timeout = 0;
              BEGIN;
              INSERT INTO lock_test_child (id, parent_id, payload)
-             VALUES (100, 1, 'drill-child-hold');
+             VALUES (100, 3, 'drill-child-hold');
              SELECT pg_sleep(${HOLD_SECONDS});
              ROLLBACK;" &
     SESS_A_PID=$!
@@ -93,13 +100,13 @@ if [[ "${MODE}" == "child_blocks_parent" ]]; then
     sleep 2
 
     echo ""
-    echo "--- Session B: DELETE parent row (id=1) — blocked by Session A's FK share lock ---"
+    echo "--- Session B: DELETE parent row (id=3) — blocked by Session A's FK share lock ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_fk_parent_deleter';
              SET statement_timeout = 0;
              SET lock_timeout = 0;
              BEGIN;
-             DELETE FROM lock_test_parent WHERE id = 1;
+             DELETE FROM lock_test_parent WHERE id = 3;
              ROLLBACK;" \
          2>&1 | sed 's#^#  [Session B / parent DELETE] #' &
     SESS_B_PID=$!
@@ -110,18 +117,18 @@ else
     # Mode B: parent DELETE held open, blocking child INSERT (FK check)
     # -------------------------------------------------------------------------
     echo "--- Mode B: parent_blocks_child ---"
-    echo "    Session A: DELETE parent row (id=2) — does not commit"
-    echo "    Session B: INSERT child row referencing parent_id=2 → blocked"
+    echo "    Session A: DELETE parent row (id=3) — does not commit"
+    echo "    Session B: INSERT child row referencing parent_id=3 → blocked"
     echo "    (FK check on insert must verify parent row is committed)"
     echo ""
 
-    echo "--- Session A: DELETE parent (id=2) + hold transaction ---"
+    echo "--- Session A: DELETE parent (id=3) + hold transaction ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_fk_parent_deleter_hold';
              SET statement_timeout = 0;
              SET idle_in_transaction_session_timeout = 0;
              BEGIN;
-             DELETE FROM lock_test_parent WHERE id = 2;
+             DELETE FROM lock_test_parent WHERE id = 3;
              SELECT pg_sleep(${HOLD_SECONDS});
              ROLLBACK;" &
     SESS_A_PID=$!
@@ -130,14 +137,14 @@ else
     sleep 2
 
     echo ""
-    echo "--- Session B: INSERT child referencing parent_id=2 → blocked on FK check ---"
+    echo "--- Session B: INSERT child referencing parent_id=3 → blocked on FK check ---"
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_fk_child_inserter_blocked';
              SET statement_timeout = 0;
              SET lock_timeout = 0;
              BEGIN;
              INSERT INTO lock_test_child (id, parent_id, payload)
-             VALUES (101, 2, 'drill-child-blocked');
+             VALUES (101, 3, 'drill-child-blocked');
              ROLLBACK;" \
          2>&1 | sed 's#^#  [Session B / child INSERT] #' &
     SESS_B_PID=$!

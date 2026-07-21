@@ -34,6 +34,14 @@
 #
 # mode: vacuum_full_blocks_dml (default) | long_txn_blocks_vacuum
 #
+# FIXED: both modes previously passed VACUUM as part of a multi-statement single
+# `-c "SET ...; VACUUM ...;"` call — psql implicitly wraps that in one
+# transaction, and VACUUM cannot run inside a transaction block, so it errored
+# out immediately every run ("VACUUM cannot run inside a transaction block")
+# without ever acquiring AccessExclusiveLock at all. Confirmed via a real run
+# where Sessions B/C ran through unobstructed instead of blocking. VACUUM now
+# gets its own separate -c call in both modes.
+#
 # COVERAGE GAP (left as-is, not fixed by this pass): mode A's AccessExclusiveLock
 # is only held for as long as VACUUM FULL actually takes, and lock_test_accounts
 # has only 5 rows (01_setup_lock_drill_tables.sql) — VACUUM FULL on a table
@@ -87,10 +95,17 @@ if [[ "${MODE}" == "vacuum_full_blocks_dml" ]]; then
 
     echo ""
     echo "--- Session A: VACUUM FULL ---"
+    # VACUUM cannot run inside a transaction block, and psql implicitly wraps a
+    # multi-statement `-c "stmt1; stmt2; stmt3"` string in one transaction —
+    # so a single combined -c here made VACUUM FULL error out immediately
+    # ("VACUUM cannot run inside a transaction block") without ever acquiring
+    # AccessExclusiveLock. Multiple -c flags run as separate implicit
+    # transactions within the SAME session (plain SET persists across them),
+    # so VACUUM gets its own transaction-free call.
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
-         -c "SET application_name = 'drill_vacuum_full';
-             SET statement_timeout = 0;
-             VACUUM FULL lock_test_accounts;" \
+         -c "SET application_name = 'drill_vacuum_full';" \
+         -c "SET statement_timeout = 0;" \
+         -c "VACUUM FULL lock_test_accounts;" \
          2>&1 | sed 's#^#  [Session A / VACUUM FULL] #' &
     VACUUM_PID=$!
     echo "  Session A spawned (shell pid ${VACUUM_PID})"
@@ -180,12 +195,15 @@ else
 
     echo ""
     echo "--- Session B: generating dead tuples then running VACUUM ---"
+    # Same VACUUM-cannot-run-inside-a-transaction-block issue as Mode A above —
+    # VACUUM needs its own -c call, separate from the preceding SET/UPDATE/
+    # DELETE/pg_sleep (which are fine combined; only VACUUM itself objects).
     psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}" \
          -c "SET application_name = 'drill_vacuum_workload';
              UPDATE lock_test_accounts SET balance = balance + 1;
              DELETE FROM lock_test_accounts WHERE id = 5;
-             SELECT pg_sleep(3);
-             VACUUM (VERBOSE, ANALYZE) lock_test_accounts;" \
+             SELECT pg_sleep(3);" \
+         -c "VACUUM (VERBOSE, ANALYZE) lock_test_accounts;" \
          2>&1 | sed 's/^/  [Session B] /'
 
     echo ""

@@ -16,11 +16,20 @@
 #             -- still a Seq Scan despite the plain index existing
 #
 # Usage:
-#   ./03_simulate_function_wrapped_predicate.sh [--yes]
+#   ./03_simulate_function_wrapped_predicate.sh [hold_seconds] [--yes]
+#
+# Defaults: hold_seconds=5 — how long the sustained session below stays
+# state='active' (see hold_session_active in _lib/env.sh). 5s is well under
+# the hunter's 300s poll interval/query_slow >=30s threshold; pass a larger
+# value (e.g. 60+) for a wider hunter-detection window.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
+
+POSARGS=()
+while IFS= read -r line; do POSARGS+=("${line}"); done < <(strip_flags "$@")
+HOLD_SECONDS="${POSARGS[0]:-5}"
 
 PSQL=(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}")
 TARGET_EMAIL="user100@example.com"
@@ -53,7 +62,7 @@ echo "    clearing the hunter's 300s poll interval/query_critical threshold."
 echo "    slowq_customers is seeded at 150k rows (01_setup), above the hunter's"
 echo "    n_live_tup > 100k pre-filter, so seq_scan_tables can still fire."
 hold_session_active "drill_function_predicate" \
-    "SELECT * FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 5
+    "SELECT * FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" "${HOLD_SECONDS}"
 run_seq_scan_burst "drill_function_predicate" \
     "1 FROM slowq_customers WHERE lower(email) = lower('${TARGET_EMAIL}')" 2000
 wait "${HOLD_PID}" 2>/dev/null || true

@@ -13,21 +13,26 @@
 #         ORDER BY created_at DESC LIMIT 50;   -- keyset pagination, O(limit)
 #
 # Usage:
-#   ./04_simulate_offset_pagination.sh [deep_offset]
+#   ./04_simulate_offset_pagination.sh [deep_offset] [hold_seconds]
 #
 # Defaults: deep_offset=100000 (walks/discards a hundred thousand rows on
 # every EXPLAIN; slowq_orders is seeded at 200k rows in 01_setup so this
 # stays within range with margin). Sized for a <=20s drill run, not to
 # maximize the cost gap between OFFSET and keyset pagination.
+#
+# hold_seconds=5 — how long the sustained session below stays state='active'
+# (see hold_session_active in _lib/env.sh). 5s is well under the hunter's
+# 300s poll interval/query_slow >=30s threshold; pass a larger value (e.g.
+# 60+) for a wider hunter-detection window.
 # =============================================================================
 
 set -euo pipefail
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../_lib/env.sh"
 
-DEEP_OFFSET="100000"
-for arg in "$@"; do
-    [[ "${arg}" =~ ^[0-9]+$ ]] && DEEP_OFFSET="${arg}"
-done
+POSARGS=()
+while IFS= read -r line; do POSARGS+=("${line}"); done < <(strip_flags "$@")
+DEEP_OFFSET="${POSARGS[0]:-100000}"
+HOLD_SECONDS="${POSARGS[1]:-5}"
 
 PSQL=(psql -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}" -d "${PGDATABASE}")
 
@@ -67,7 +72,7 @@ echo "    bursts a few hundred repeats of the OFFSET query (each one itself"
 echo "    walks/discards ${DEEP_OFFSET} rows, so the iteration count is kept low"
 echo "    to stay within a <=20s drill run) so a quick poll can catch it."
 hold_session_active "drill_offset_pagination" \
-    "SELECT * FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 5
+    "SELECT * FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" "${HOLD_SECONDS}"
 run_seq_scan_burst "drill_offset_pagination" \
     "1 FROM slowq_orders ORDER BY created_at DESC OFFSET ${DEEP_OFFSET} LIMIT 50" 200
 wait "${HOLD_PID}" 2>/dev/null || true
